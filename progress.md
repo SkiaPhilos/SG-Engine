@@ -125,6 +125,8 @@
   Migrated backend execution from container-only Express routes to dual-compatible Vercel Serverless Functions in `/api/safepay/*.ts` and `/api/health.ts` using the Supabase Service Role client (`SUPABASE_SERVICE_ROLE_KEY`). Provided `vercel.json` with SPA routing fallbacks and CORS security headers. Completely eliminated all Firebase and Firebase Admin dependencies (`firebase`, `firebase-admin`, `src/services/firebase/`), resulting in a 100% clean Supabase + Vercel native build.
 - **ADR 012 (2026-09-17) - Elimination of Admin Credential Leaks & Supabase Auth Hardening**:
   Removed all hardcoded admin email strings, autofill buttons, and plaintext credential displays from `AdminLogin.tsx`. Inputs default to blank values with secure browser autocomplete headers. Added seamless dual-mode support for "Sign In", "Create Admin Account", and "Forgot Password" directly through Supabase Auth, with first-authenticated-user auto-enrollment into the `admins` RBAC table and precise diagnostic reporting for email confirmation and invalid credentials.
+- **ADR 013 (2026-09-18) - Pure Vercel Build Command Isolation & Resilient Environment Resolution**:
+  Decoupled Vercel deployment builds from Cloud Run container requirements: configured `"buildCommand": "vite build"` in `vercel.json` so Vercel no longer executes `esbuild server.ts`. Updated SPA routing with regex negative lookahead `/((?!api/.*).*)` to preserve `/api/*` for native Vercel Serverless Functions. Hardened `vite.config.ts` via `loadEnv` and build-time `define` blocks to universally capture `VITE_SUPABASE_URL`, `SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_URL`.
 
 ---
 

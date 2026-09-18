@@ -14,8 +14,18 @@ function sanitizeEnv(val: any): string {
   return clean;
 }
 
-const supabaseUrl = sanitizeEnv(import.meta.env.VITE_SUPABASE_URL);
-const supabaseAnonKey = sanitizeEnv(import.meta.env.VITE_SUPABASE_ANON_KEY);
+const rawUrl =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_URL) ||
+  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)) ||
+  '';
+
+const rawKey =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) ||
+  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)) ||
+  '';
+
+const supabaseUrl = sanitizeEnv(rawUrl);
+const supabaseAnonKey = sanitizeEnv(rawKey);
 
 let supabaseInstance: SupabaseClient | null = null;
 
