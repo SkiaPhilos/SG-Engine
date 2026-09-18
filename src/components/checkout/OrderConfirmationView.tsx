@@ -15,6 +15,7 @@ import {
 import { useStore } from '../../context/StoreContext';
 import { Order } from '../../types/store';
 import { getOrderById, updateOrderPaymentProof } from '../../services/store/storeService';
+import { uploadToStorage } from '../../services/supabase/storage';
 
 export const OrderConfirmationView: React.FC = () => {
   const {
@@ -90,12 +91,23 @@ export const OrderConfirmationView: React.FC = () => {
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setProofImage(reader.result as string);
-    reader.readAsDataURL(file);
+
+    try {
+      setIsUpdating(true);
+      const cleanName = `receipt_${activeOrderId}_${Date.now()}.${file.name.split('.').pop() || 'jpg'}`;
+      const receiptUrl = await uploadToStorage('payment-receipts', file, cleanName);
+      setProofImage(receiptUrl);
+    } catch (err) {
+      console.warn('Receipt upload fallback:', err);
+      const reader = new FileReader();
+      reader.onload = () => setProofImage(reader.result as string);
+      reader.readAsDataURL(file);
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   if (loading) {

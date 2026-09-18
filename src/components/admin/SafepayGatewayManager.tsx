@@ -176,7 +176,7 @@ export const SafepayGatewayManager: React.FC = () => {
         <div className="space-y-1">
           <p className="font-bold">Zero-Exposure Server Architecture (ADR 010)</p>
           <p style={{ color: themeColors.muted }}>
-            Safepay API credentials and webhook secrets are encrypted at rest with AES-256-GCM using <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-bold">SAFEPAY_ENCRYPTION_KEY</code> and stored in server-protected Firestore collections. Plaintext credentials are never delivered to the browser or customer storefront. Webhooks are cryptographically validated via HMAC-SHA256 before marking payments paid.
+            Safepay API credentials and webhook secrets are encrypted at rest with AES-256-GCM using <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-bold">SAFEPAY_ENCRYPTION_KEY</code> and stored in the server-protected <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-bold">private_settings</code> database table. Plaintext credentials are never delivered to the browser or customer storefront. Webhooks are cryptographically validated via HMAC-SHA256 before marking payments paid.
           </p>
         </div>
       </div>

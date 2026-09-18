@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Upload, Image as ImageIcon, X, Link, Check, AlertCircle } from 'lucide-react';
+import { uploadToStorage } from '../../services/supabase/storage';
 
 interface ImageUploadProps {
   value: string;
@@ -27,8 +28,8 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Resize and compress image using HTML Canvas
-  const processFile = (file: File) => {
+  // Resize and compress image using HTML Canvas, then upload to Supabase Storage
+  const processFile = async (file: File) => {
     if (!file.type.startsWith('image/')) {
       setError('Please select an image file (JPG, PNG, WebP, SVG).');
       return;
@@ -40,7 +41,7 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = document.createElement('img');
-      img.onload = () => {
+      img.onload = async () => {
         try {
           let { width, height } = img;
           if (width > maxDimension || height > maxDimension) {
@@ -57,18 +58,19 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            onChange(e.target?.result as string);
-            setProcessing(false);
-            return;
+          let dataUrl = e.target?.result as string;
+
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            dataUrl = canvas.toDataURL('image/jpeg', 0.85);
           }
 
-          ctx.drawImage(img, 0, 0, width, height);
-          // Compress to JPEG / WebP for optimal payload size
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-          onChange(compressedDataUrl);
-        } catch (err) {
-          console.warn('Canvas compression failed, using original data URL:', err);
+          // Upload to Supabase Storage bucket 'store-assets'
+          const cleanName = `asset_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+          const finalUrl = await uploadToStorage('store-assets', dataUrl, cleanName);
+          onChange(finalUrl);
+        } catch (err: any) {
+          console.warn('Image optimization/upload failed, using fallback data URL:', err);
           onChange(e.target?.result as string);
         } finally {
           setProcessing(false);

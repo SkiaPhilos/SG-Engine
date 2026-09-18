@@ -1,7 +1,5 @@
 import crypto from 'crypto';
-import { initializeApp, getApps } from 'firebase-admin/app';
-import { getFirestore, Firestore } from 'firebase-admin/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import { getAdminSupabase } from './supabaseAdmin';
 
 export interface SafepayCredentials {
   apiKey: string;
@@ -16,7 +14,6 @@ export interface VaultDiagnostic {
   details?: string;
 }
 
-// Backwards-compatible alias for existing frontend callers
 export type SecretManagerDiagnostic = VaultDiagnostic;
 
 export interface SafepayStatusResponse {
@@ -32,22 +29,7 @@ export interface SafepayStatusResponse {
   secretManager?: VaultDiagnostic;
 }
 
-// Firebase Admin Firestore instance (lazily initialized)
-let adminDb: Firestore | null = null;
-
-export function getAdminFirestore(): Firestore {
-  if (!adminDb) {
-    if (getApps().length === 0) {
-      initializeApp({
-        projectId: firebaseConfig.projectId,
-      });
-    }
-    adminDb = getFirestore(firebaseConfig.firestoreDatabaseId);
-  }
-  return adminDb;
-}
-
-// In-memory cache for credentials to avoid redundant Firestore round-trips and decryptions
+// In-memory cache for credentials to avoid redundant database round-trips and decryptions
 interface CachedCredentials {
   creds: SafepayCredentials;
   cachedAt: number;
@@ -107,7 +89,7 @@ function encryptPayload(creds: SafepayCredentials, key: Buffer): EncryptedSafepa
 
 function decryptPayload(data: any, key: Buffer): SafepayCredentials {
   if (!data.iv || !data.authTag || !data.ciphertext) {
-    throw new Error('Malformed encrypted payload in Firestore');
+    throw new Error('Malformed encrypted payload in database');
   }
   const iv = Buffer.from(data.iv, 'hex');
   const authTag = Buffer.from(data.authTag, 'hex');
@@ -120,7 +102,7 @@ function decryptPayload(data: any, key: Buffer): SafepayCredentials {
 }
 
 /**
- * Loads Safepay credentials securely from Firestore (decrypted via AES-256-GCM) or environment variables.
+ * Loads Safepay credentials securely from Supabase database (decrypted via AES-256-GCM) or environment variables.
  * Frontend NEVER receives the plaintext credentials.
  */
 export async function getSafepayCredentials(storeId: string = 'default'): Promise<SafepayCredentials> {
@@ -163,18 +145,20 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     };
   }
 
-  // 4. Retrieve encrypted ciphertext from Firestore via Firebase Admin SDK
+  // 4. Retrieve encrypted ciphertext from Supabase private_settings table
   try {
-    const db = getAdminFirestore();
-    let docSnap = await db.collection('stores').doc(storeId).collection('private_settings').doc('safepay').get();
-    if (!docSnap.exists) {
-      docSnap = await db.collection('stores').doc(storeId).collection('settings').doc('safepay').get();
-    }
+    const supabase = getAdminSupabase();
+    const { data, error } = await supabase
+      .from('private_settings')
+      .select('encrypted_data')
+      .eq('store_id', storeId)
+      .eq('setting_key', 'safepay')
+      .maybeSingle();
 
-    if (!docSnap.exists) {
+    if (error || !data) {
       lastVaultDiagnostic = {
         status: 'not_configured',
-        message: 'SAFEPAY_ENCRYPTION_KEY is active, but no credentials have been saved to Firestore yet.',
+        message: 'SAFEPAY_ENCRYPTION_KEY is active, but no credentials have been saved to database yet.',
       };
       return {
         apiKey: '',
@@ -184,16 +168,11 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
       };
     }
 
-    const docData = docSnap.data();
-    if (!docData) {
-      throw new Error('Empty document in Firestore');
-    }
-
-    const creds = decryptPayload(docData, key);
+    const creds = decryptPayload(data.encrypted_data, key);
     credentialsCache.set(storeId, { creds, cachedAt: Date.now() });
     lastVaultDiagnostic = {
       status: 'connected',
-      message: 'Credentials successfully decrypted from Firestore using AES-256-GCM master key.',
+      message: 'Credentials successfully decrypted from Supabase database using AES-256-GCM master key.',
     };
     return creds;
   } catch (err: any) {
@@ -214,7 +193,7 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
 }
 
 /**
- * Encrypts and saves Safepay credentials to Firestore using AES-256-GCM and the master encryption key.
+ * Encrypts and saves Safepay credentials to database using AES-256-GCM and the master encryption key.
  */
 export async function saveSafepayCredentials(
   storeId: string = 'default',
@@ -241,16 +220,31 @@ export async function saveSafepayCredentials(
   };
 
   const encrypted = encryptPayload(updated, key);
-  const db = getAdminFirestore();
+  const supabase = getAdminSupabase();
 
-  // Save to private_settings in Firestore with server-side Admin SDK
-  await db.collection('stores').doc(storeId).collection('private_settings').doc('safepay').set(encrypted);
+  // Save to private_settings in Supabase
+  const { error } = await supabase
+    .from('private_settings')
+    .upsert(
+      {
+        store_id: storeId,
+        setting_key: 'safepay',
+        encrypted_data: encrypted,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'store_id,setting_key' }
+    );
+
+  if (error) {
+    console.error('[SafepayVault] Supabase upsert error:', error.message);
+    throw error;
+  }
 
   // Invalidate and update cache
   credentialsCache.set(storeId, { creds: updated, cachedAt: Date.now() });
   lastVaultDiagnostic = {
     status: 'connected',
-    message: 'Credentials encrypted with AES-256-GCM and saved to Firestore.',
+    message: 'Credentials encrypted with AES-256-GCM and saved to database.',
   };
 }
 
@@ -280,66 +274,91 @@ export async function getSafepayStatus(storeId: string = 'default', baseUrl: str
 }
 
 /**
- * Helper to fetch Firestore order via Firebase Admin SDK.
- * Runs with server-side administrative authority (never blocked by client security rules).
+ * Helper to fetch order from Supabase via backend admin authority.
  */
-export async function fetchFirestoreOrder(storeId: string, orderId: string): Promise<any> {
-  const db = getAdminFirestore();
-  const docRef = db.collection('stores').doc(storeId).collection('orders').doc(orderId);
-  const snap = await docRef.get();
-  if (!snap.exists) {
+export async function fetchOrder(storeId: string, orderId: string): Promise<any> {
+  const supabase = getAdminSupabase();
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('id', orderId)
+    .eq('store_id', storeId)
+    .maybeSingle();
+
+  if (error || !data) {
     throw new Error(`Order ${orderId} not found in store ${storeId}`);
   }
-  const data = snap.data() || {};
+
   return {
-    id: snap.id,
+    id: data.id,
     total: typeof data.total === 'number' ? data.total : Number(data.total || 0),
-    orderNumber: data.orderNumber || '',
+    orderNumber: data.order_number || '',
     customer: data.customer || {},
-    paymentStatus: data.paymentStatus || 'unpaid',
-    orderStatus: data.orderStatus || 'pending',
-    safepayTracker: data.safepayTracker || undefined,
+    paymentStatus: data.payment_status || 'unpaid',
+    orderStatus: data.order_status || 'pending',
+    safepayTracker: data.safepay_tracker || undefined,
   };
 }
 
 /**
- * Helper to update Firestore order via Firebase Admin SDK.
- * Runs with server-side administrative authority (never blocked by client security rules).
+ * Helper to update order in Supabase.
  */
-export async function updateFirestoreOrder(
+export async function updateOrder(
   storeId: string,
   orderId: string,
   updates: Record<string, any>
 ): Promise<void> {
-  const db = getAdminFirestore();
-  const docRef = db.collection('stores').doc(storeId).collection('orders').doc(orderId);
-  await docRef.set(updates, { merge: true });
+  const supabase = getAdminSupabase();
+  const dbUpdates: Record<string, any> = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (updates.paymentStatus) dbUpdates.payment_status = updates.paymentStatus;
+  if (updates.orderStatus) dbUpdates.order_status = updates.orderStatus;
+  if (updates.safepayTracker) dbUpdates.safepay_tracker = updates.safepayTracker;
+  if (updates.safepaySignatureVerified !== undefined) dbUpdates.safepay_signature_verified = updates.safepaySignatureVerified;
+  if (updates.safepayPaidAt) dbUpdates.safepay_paid_at = updates.safepayPaidAt;
+
+  const { error } = await supabase
+    .from('orders')
+    .update(dbUpdates)
+    .eq('id', orderId)
+    .eq('store_id', storeId);
+
+  if (error) {
+    console.error('updateOrder error:', error.message);
+    throw error;
+  }
 }
 
 /**
- * Searches orders by Safepay tracker token using Firebase Admin SDK.
+ * Searches orders by Safepay tracker token in Supabase.
  */
 export async function findOrderByTracker(storeId: string, trackerToken: string): Promise<{ orderId: string; orderData: any } | null> {
-  const db = getAdminFirestore();
-  const ordersRef = db.collection('stores').doc(storeId).collection('orders');
-  const snap = await ordersRef.where('safepayTracker', '==', trackerToken).limit(1).get();
-  if (snap.empty) {
+  const supabase = getAdminSupabase();
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, total, payment_status')
+    .eq('store_id', storeId)
+    .eq('safepay_tracker', trackerToken)
+    .maybeSingle();
+
+  if (error || !data) {
     return null;
   }
-  const doc = snap.docs[0];
-  const data = doc.data() || {};
+
   return {
-    orderId: doc.id,
+    orderId: data.id,
     orderData: {
       total: typeof data.total === 'number' ? data.total : Number(data.total || 0),
-      paymentStatus: data.paymentStatus,
+      paymentStatus: data.payment_status,
     },
   };
 }
 
 /**
  * Core Tracker Initialization:
- * 1. Validates order exists in Firestore and total > 0.
+ * 1. Validates order exists in Supabase and total > 0.
  * 2. Fetches server-side Safepay API Key (client never sees key).
  * 3. Calls Safepay order/v1/init with amount in PKR paisas (1 PKR = 100 paisas).
  * 4. Calls Safepay client/passport/v1/token for TBT passport token.
@@ -355,7 +374,7 @@ export async function initSafepayTracker(params: {
   const { storeId, orderId, redirectUrl, cancelUrl } = params;
 
   // 1. Authoritative order retrieval
-  const order = await fetchFirestoreOrder(storeId, orderId);
+  const order = await fetchOrder(storeId, orderId);
   if (!order || order.total <= 0) {
     throw new Error('Order not found or invalid order total');
   }
@@ -435,11 +454,10 @@ export async function initSafepayTracker(params: {
 
   const checkoutUrl = checkoutUrlObj.toString();
 
-  // 6. Step D: Save tracker to Firestore order
-  await updateFirestoreOrder(storeId, orderId, {
+  // 6. Step D: Save tracker to database order
+  await updateOrder(storeId, orderId, {
     safepayTracker: trackerToken,
     paymentStatus: 'pending_verification',
-    updatedAt: new Date().toISOString(),
   });
 
   return { checkoutUrl, tracker: trackerToken };
@@ -516,7 +534,7 @@ export function verifyWebhookSignature(params: {
 
 /**
  * Processes a verified Safepay webhook:
- * Reconciles order payment status, updates Firestore safely.
+ * Reconciles order payment status, updates database safely.
  */
 export async function processVerifiedWebhook(storeId: string, payload: any): Promise<{ handled: boolean; orderId?: string }> {
   // Safepay payloads may put notification inside data.notification or top-level notification/data
@@ -553,12 +571,11 @@ export async function processVerifiedWebhook(storeId: string, payload: any): Pro
   }
 
   // Update order status to paid
-  await updateFirestoreOrder(storeId, targetOrderId, {
+  await updateOrder(storeId, targetOrderId, {
     paymentStatus: 'paid',
     orderStatus: 'confirmed',
     safepaySignatureVerified: true,
     safepayPaidAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
   });
 
   console.log(`Order ${targetOrderId} successfully marked as PAID via verified Safepay webhook.`);
@@ -567,7 +584,7 @@ export async function processVerifiedWebhook(storeId: string, payload: any): Pro
 
 /**
  * Diagnostic sandbox connection test.
- * Surfaces specific encryption vault / Firestore status if credentials are unreadable.
+ * Surfaces specific encryption vault / database status if credentials are unreadable.
  */
 export async function testSafepayConnection(storeId: string = 'default'): Promise<{ success: boolean; message: string }> {
   const creds = await getSafepayCredentials(storeId);
@@ -581,7 +598,7 @@ export async function testSafepayConnection(storeId: string = 'default'): Promis
     if (lastVaultDiagnostic.status === 'not_configured') {
       return {
         success: false,
-        message: `Encryption key is active, but no Safepay API Key has been saved yet in Firestore. Enter your credentials above and click Save.`,
+        message: `Encryption key is active, but no Safepay API Key has been saved yet in the database. Enter your credentials above and click Save.`,
       };
     }
     if (lastVaultDiagnostic.status === 'error') {

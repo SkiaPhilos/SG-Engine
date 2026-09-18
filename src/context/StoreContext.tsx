@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from '../services/firebase/config';
+import { User } from '@supabase/supabase-js';
+import { supabase } from '../services/supabase/client';
 import {
   StoreConfig,
   Category,
@@ -20,7 +20,7 @@ import {
 } from '../services/store/storeService';
 import { getThemePreset, deriveThemeColors } from '../engine/theme/themes';
 import { calculateOrderTotals, PricingCalculationResult } from '../engine/pricing/pricingEngine';
-import { checkIsAdmin } from '../services/auth/authService';
+import { checkIsAdmin, subscribeAuthState } from '../services/auth/authService';
 
 export type AppView =
   | 'store'
@@ -119,7 +119,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Auth observer
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async user => {
+    const unsub = subscribeAuthState(async user => {
       setAdminUser(user);
       if (user) {
         const adminStatus = await checkIsAdmin(user);
@@ -133,7 +133,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const checkAdminStatus = async () => {
-    const status = await checkIsAdmin(auth.currentUser);
+    const { data } = await supabase.auth.getUser();
+    const status = await checkIsAdmin(data?.user || null);
     setIsAdmin(status);
     return status;
   };

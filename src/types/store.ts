@@ -156,6 +156,7 @@ export interface Order {
   id: string;
   storeId: string;
   orderNumber: string;
+  accessToken?: string;
   customer: CustomerDetails;
   items: OrderItem[];
   appliedOffers: AppliedOfferSummary[];

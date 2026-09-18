@@ -1,16 +1,18 @@
+import { supabase, isSupabaseConfigured } from '../supabase/client';
 import {
-  collection,
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  getDocs,
-  onSnapshot,
-  query,
-  orderBy,
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase/config';
+  toStoreConfig,
+  fromStoreConfig,
+  toCategory,
+  fromCategory,
+  toProduct,
+  fromProduct,
+  toOffer,
+  fromOffer,
+  toPaymentMethod,
+  fromPaymentMethod,
+  toOrder,
+  fromOrder,
+} from '../supabase/types';
 import {
   StoreConfig,
   Category,
@@ -59,7 +61,7 @@ export const INITIAL_DEFAULT_SECTIONS: HomepageSection[] = [
     subtitle: 'Browse collections thoughtfully organized for every lifestyle.',
     enabled: true,
     config: {
-      layout: 'chips', // 'chips' | 'grid' | 'cards'
+      layout: 'chips',
     },
   },
   {
@@ -153,308 +155,625 @@ export const DEFAULT_STORE_CONFIG: StoreConfig = {
     orderNotesEnabled: true,
   },
   searchEnabled: true,
-  isConfigured: false, // Initially false so owner sees setup state
+  isConfigured: false,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
 
-/**
- * Fetch or initialize the Store Configuration
- */
+// ============================================================================
+// Local Fallback Storage Cache
+// (Used seamlessly when Supabase credentials are not yet entered)
+// ============================================================================
+const LOCAL_STORAGE_PREFIX = 'store_engine_';
+
+function getLocalItem<T>(key: string, defaultValue: T): T {
+  if (typeof window === 'undefined') return defaultValue;
+  try {
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_PREFIX}${key}`);
+    return raw ? JSON.parse(raw) : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+function setLocalItem<T>(key: string, value: T): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(`${LOCAL_STORAGE_PREFIX}${key}`, JSON.stringify(value));
+  } catch (err) {
+    console.warn('LocalStorage save warning:', err);
+  }
+}
+
+// ============================================================================
+// 1. Store Configuration
+// ============================================================================
+
 export async function getStoreConfig(storeId = DEFAULT_STORE_ID): Promise<StoreConfig> {
-  const path = `stores/${storeId}`;
+  if (!isSupabaseConfigured()) {
+    return getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId });
+  }
+
   try {
-    const docRef = doc(db, 'stores', storeId);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      return snap.data() as StoreConfig;
+    const { data, error } = await supabase
+      .from('stores')
+      .select('*')
+      .eq('id', storeId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Supabase getStoreConfig error:', error.message);
+      return getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId });
     }
-    // If not found, return the default template
+
+    if (data) {
+      const config = toStoreConfig(data);
+      setLocalItem(`config_${storeId}`, config);
+      return config;
+    }
+
+    // Default template if store not yet inserted
     return { ...DEFAULT_STORE_CONFIG, id: storeId };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
+  } catch (err) {
+    console.error('getStoreConfig exception:', err);
+    return getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId });
   }
 }
 
-/**
- * Save / update the Store Configuration
- */
 export async function saveStoreConfig(storeId = DEFAULT_STORE_ID, config: Partial<StoreConfig>): Promise<void> {
-  const path = `stores/${storeId}`;
+  const merged: StoreConfig = {
+    ...DEFAULT_STORE_CONFIG,
+    ...(getLocalItem<StoreConfig>(`config_${storeId}`, DEFAULT_STORE_CONFIG)),
+    ...config,
+    id: storeId,
+    updatedAt: new Date().toISOString(),
+  };
+  setLocalItem(`config_${storeId}`, merged);
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    const docRef = doc(db, 'stores', storeId);
-    const updatedData = {
-      ...config,
-      id: storeId,
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(docRef, updatedData, { merge: true });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+    const row = fromStoreConfig(merged);
+    const { error } = await supabase
+      .from('stores')
+      .upsert({ ...row, id: storeId }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('Supabase saveStoreConfig error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('saveStoreConfig exception:', err);
+    throw err;
   }
 }
 
-// ----------------- Categories -----------------
+// ============================================================================
+// 2. Categories
+// ============================================================================
 
 export async function getCategories(storeId = DEFAULT_STORE_ID): Promise<Category[]> {
-  const path = `stores/${storeId}/categories`;
+  if (!isSupabaseConfigured()) {
+    return getLocalItem<Category[]>(`categories_${storeId}`, []);
+  }
+
   try {
-    const colRef = collection(db, 'stores', storeId, 'categories');
-    const q = query(colRef, orderBy('sortOrder', 'asc'));
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ ...d.data(), id: d.id } as Category));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('store_id', storeId)
+      .order('sort_order', { ascending: true });
+
+    if (error) {
+      console.warn('Supabase getCategories error:', error.message);
+      return getLocalItem<Category[]>(`categories_${storeId}`, []);
+    }
+
+    const categories = (data || []).map(toCategory);
+    setLocalItem(`categories_${storeId}`, categories);
+    return categories;
+  } catch (err) {
+    console.error('getCategories exception:', err);
+    return getLocalItem<Category[]>(`categories_${storeId}`, []);
   }
 }
 
-export async function saveCategory(storeId = DEFAULT_STORE_ID, category: Partial<Category> & { name: string }): Promise<string> {
+export async function saveCategory(
+  storeId = DEFAULT_STORE_ID,
+  category: Partial<Category> & { name: string }
+): Promise<string> {
   const catId = category.id || `cat_${Date.now()}`;
-  const path = `stores/${storeId}/categories/${catId}`;
+  const slug = category.slug || category.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+  const newCategory: Category = {
+    id: catId,
+    storeId,
+    name: category.name,
+    slug,
+    description: category.description || '',
+    imageUrl: category.imageUrl || '',
+    sortOrder: category.sortOrder ?? 0,
+    isActive: category.isActive !== false,
+    createdAt: category.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Update local cache
+  const localList = getLocalItem<Category[]>(`categories_${storeId}`, []);
+  const updatedLocal = localList.some(c => c.id === catId)
+    ? localList.map(c => (c.id === catId ? newCategory : c))
+    : [...localList, newCategory];
+  setLocalItem(`categories_${storeId}`, updatedLocal);
+
+  if (!isSupabaseConfigured()) return catId;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'categories', catId);
-    const slug = category.slug || category.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    const data: Category = {
-      id: catId,
-      storeId,
-      name: category.name,
-      slug,
-      description: category.description || '',
-      imageUrl: category.imageUrl || '',
-      sortOrder: category.sortOrder ?? 0,
-      isActive: category.isActive !== false,
-      createdAt: category.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(docRef, data, { merge: true });
+    const row = fromCategory(newCategory);
+    const { error } = await supabase
+      .from('categories')
+      .upsert({ ...row, id: catId, store_id: storeId }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('Supabase saveCategory error:', error.message);
+      throw error;
+    }
+
     return catId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  } catch (err) {
+    console.error('saveCategory exception:', err);
+    throw err;
   }
 }
 
 export async function deleteCategory(storeId = DEFAULT_STORE_ID, categoryId: string): Promise<void> {
-  const path = `stores/${storeId}/categories/${categoryId}`;
+  // Update local cache
+  const localList = getLocalItem<Category[]>(`categories_${storeId}`, []);
+  setLocalItem(`categories_${storeId}`, localList.filter(c => c.id !== categoryId));
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    // Unlink category from any products that belong to it to avoid orphaned references
-    const productsRef = collection(db, 'stores', storeId, 'products');
-    const snap = await getDocs(productsRef);
-    for (const prodDoc of snap.docs) {
-      const prod = prodDoc.data() as Product;
-      if (prod.categoryIds && prod.categoryIds.includes(categoryId)) {
-        const filtered = prod.categoryIds.filter(id => id !== categoryId);
-        await updateDoc(doc(db, 'stores', storeId, 'products', prodDoc.id), {
-          categoryIds: filtered,
-          updatedAt: new Date().toISOString(),
-        });
+    // Unlink category from any products
+    const { data: prods } = await supabase
+      .from('products')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (prods && prods.length > 0) {
+      for (const p of prods) {
+        if (Array.isArray(p.category_ids) && p.category_ids.includes(categoryId)) {
+          const filtered = p.category_ids.filter((id: string) => id !== categoryId);
+          await supabase
+            .from('products')
+            .update({ category_ids: filtered, updated_at: new Date().toISOString() })
+            .eq('id', p.id);
+        }
       }
     }
-    await deleteDoc(doc(db, 'stores', storeId, 'categories', categoryId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
+
+    const { error } = await supabase
+      .from('categories')
+      .delete()
+      .eq('id', categoryId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase deleteCategory error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('deleteCategory exception:', err);
+    throw err;
   }
 }
 
-// ----------------- Products -----------------
+// ============================================================================
+// 3. Products
+// ============================================================================
 
 export async function getProducts(storeId = DEFAULT_STORE_ID): Promise<Product[]> {
-  const path = `stores/${storeId}/products`;
+  if (!isSupabaseConfigured()) {
+    return getLocalItem<Product[]>(`products_${storeId}`, []);
+  }
+
   try {
-    const colRef = collection(db, 'stores', storeId, 'products');
-    const snap = await getDocs(colRef);
-    return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.warn('Supabase getProducts error:', error.message);
+      return getLocalItem<Product[]>(`products_${storeId}`, []);
+    }
+
+    const products = (data || []).map(toProduct);
+    setLocalItem(`products_${storeId}`, products);
+    return products;
+  } catch (err) {
+    console.error('getProducts exception:', err);
+    return getLocalItem<Product[]>(`products_${storeId}`, []);
   }
 }
 
-export async function saveProduct(storeId = DEFAULT_STORE_ID, product: Partial<Product> & { name: string; price: number }): Promise<string> {
+export async function saveProduct(
+  storeId = DEFAULT_STORE_ID,
+  product: Partial<Product> & { name: string; price: number }
+): Promise<string> {
   const prodId = product.id || `prod_${Date.now()}`;
-  const path = `stores/${storeId}/products/${prodId}`;
+  const slug = product.slug || product.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+  const newProduct: Product = {
+    id: prodId,
+    storeId,
+    name: product.name,
+    slug,
+    description: product.description || '',
+    price: Math.max(0, Number(product.price) || 0),
+    compareAtPrice: product.compareAtPrice ? Math.max(0, Number(product.compareAtPrice)) : undefined,
+    discountPercent: product.discountPercent !== undefined ? Math.min(100, Math.max(0, Number(product.discountPercent))) : 0,
+    categoryIds: product.categoryIds || [],
+    images: product.images || [],
+    primaryImageIndex: product.primaryImageIndex || 0,
+    stock: Math.max(0, Number(product.stock) || 0),
+    sku: product.sku || '',
+    status: product.status || 'active',
+    featured: Boolean(product.featured),
+    createdAt: product.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Local cache
+  const localList = getLocalItem<Product[]>(`products_${storeId}`, []);
+  const updatedLocal = localList.some(p => p.id === prodId)
+    ? localList.map(p => (p.id === prodId ? newProduct : p))
+    : [...localList, newProduct];
+  setLocalItem(`products_${storeId}`, updatedLocal);
+
+  if (!isSupabaseConfigured()) return prodId;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'products', prodId);
-    const slug = product.slug || product.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    const data: Product = {
-      id: prodId,
-      storeId,
-      name: product.name,
-      slug,
-      description: product.description || '',
-      price: Math.max(0, Number(product.price) || 0),
-      compareAtPrice: product.compareAtPrice ? Math.max(0, Number(product.compareAtPrice)) : undefined,
-      discountPercent: product.discountPercent !== undefined ? Math.min(100, Math.max(0, Number(product.discountPercent))) : 0,
-      categoryIds: product.categoryIds || [],
-      images: product.images || [],
-      primaryImageIndex: product.primaryImageIndex || 0,
-      stock: Math.max(0, Number(product.stock) || 0),
-      sku: product.sku || '',
-      status: product.status || 'active',
-      featured: Boolean(product.featured),
-      createdAt: product.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(docRef, data, { merge: true });
+    const row = fromProduct(newProduct);
+    const { error } = await supabase
+      .from('products')
+      .upsert({ ...row, id: prodId, store_id: storeId }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('Supabase saveProduct error:', error.message);
+      throw error;
+    }
+
     return prodId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  } catch (err) {
+    console.error('saveProduct exception:', err);
+    throw err;
   }
 }
 
 export async function deleteProduct(storeId = DEFAULT_STORE_ID, productId: string): Promise<void> {
-  const path = `stores/${storeId}/products/${productId}`;
+  const localList = getLocalItem<Product[]>(`products_${storeId}`, []);
+  setLocalItem(`products_${storeId}`, localList.filter(p => p.id !== productId));
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    await deleteDoc(doc(db, 'stores', storeId, 'products', productId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
+    const { error } = await supabase
+      .from('products')
+      .delete()
+      .eq('id', productId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase deleteProduct error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('deleteProduct exception:', err);
+    throw err;
   }
 }
 
-// ----------------- Offers -----------------
+// ============================================================================
+// 4. Offers
+// ============================================================================
 
 export async function getOffers(storeId = DEFAULT_STORE_ID): Promise<Offer[]> {
-  const path = `stores/${storeId}/offers`;
+  if (!isSupabaseConfigured()) {
+    return getLocalItem<Offer[]>(`offers_${storeId}`, []);
+  }
+
   try {
-    const colRef = collection(db, 'stores', storeId, 'offers');
-    const snap = await getDocs(colRef);
-    return snap.docs.map(d => ({ ...d.data(), id: d.id } as Offer));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    const { data, error } = await supabase
+      .from('offers')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.warn('Supabase getOffers error:', error.message);
+      return getLocalItem<Offer[]>(`offers_${storeId}`, []);
+    }
+
+    const offers = (data || []).map(toOffer);
+    setLocalItem(`offers_${storeId}`, offers);
+    return offers;
+  } catch (err) {
+    console.error('getOffers exception:', err);
+    return getLocalItem<Offer[]>(`offers_${storeId}`, []);
   }
 }
 
-export async function saveOffer(storeId = DEFAULT_STORE_ID, offer: Partial<Offer> & { name: string }): Promise<string> {
+export async function saveOffer(
+  storeId = DEFAULT_STORE_ID,
+  offer: Partial<Offer> & { name: string }
+): Promise<string> {
   const offerId = offer.id || `offer_${Date.now()}`;
-  const path = `stores/${storeId}/offers/${offerId}`;
+
+  const newOffer: Offer = {
+    id: offerId,
+    storeId,
+    name: offer.name,
+    description: offer.description || '',
+    type: offer.type || 'free_quantity',
+    status: offer.status || 'active',
+    primaryProductIds: offer.primaryProductIds || [],
+    primaryQuantity: Math.min(999, Math.max(1, Number(offer.primaryQuantity) || 1)),
+    rewardProductIds: offer.rewardProductIds || [],
+    rewardQuantity: Math.min(999, Math.max(1, Number(offer.rewardQuantity) || 1)),
+    pricingRule: offer.pricingRule || 'original',
+    pricingValue: offer.pricingValue,
+    displayStyle: offer.displayStyle || 'floating',
+    badgeText: offer.badgeText || '',
+    createdAt: offer.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const localList = getLocalItem<Offer[]>(`offers_${storeId}`, []);
+  const updatedLocal = localList.some(o => o.id === offerId)
+    ? localList.map(o => (o.id === offerId ? newOffer : o))
+    : [...localList, newOffer];
+  setLocalItem(`offers_${storeId}`, updatedLocal);
+
+  if (!isSupabaseConfigured()) return offerId;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'offers', offerId);
-    const data: Offer = {
-      id: offerId,
-      storeId,
-      name: offer.name,
-      description: offer.description || '',
-      type: offer.type || 'free_quantity',
-      status: offer.status || 'active',
-      primaryProductIds: offer.primaryProductIds || [],
-      primaryQuantity: Math.min(999, Math.max(1, Number(offer.primaryQuantity) || 1)),
-      rewardProductIds: offer.rewardProductIds || [],
-      rewardQuantity: Math.min(999, Math.max(1, Number(offer.rewardQuantity) || 1)),
-      pricingRule: offer.pricingRule || 'original',
-      pricingValue: offer.pricingValue,
-      displayStyle: offer.displayStyle || 'floating',
-      badgeText: offer.badgeText || '',
-      createdAt: offer.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(docRef, data, { merge: true });
+    const row = fromOffer(newOffer);
+    const { error } = await supabase
+      .from('offers')
+      .upsert({ ...row, id: offerId, store_id: storeId }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('Supabase saveOffer error:', error.message);
+      throw error;
+    }
+
     return offerId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  } catch (err) {
+    console.error('saveOffer exception:', err);
+    throw err;
   }
 }
 
 export async function deleteOffer(storeId = DEFAULT_STORE_ID, offerId: string): Promise<void> {
-  const path = `stores/${storeId}/offers/${offerId}`;
+  const localList = getLocalItem<Offer[]>(`offers_${storeId}`, []);
+  setLocalItem(`offers_${storeId}`, localList.filter(o => o.id !== offerId));
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    await deleteDoc(doc(db, 'stores', storeId, 'offers', offerId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
+    const { error } = await supabase
+      .from('offers')
+      .delete()
+      .eq('id', offerId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase deleteOffer error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('deleteOffer exception:', err);
+    throw err;
   }
 }
 
-// ----------------- Payment Destinations -----------------
+// ============================================================================
+// 5. Payment Destinations
+// ============================================================================
 
 export async function getPaymentMethods(storeId = DEFAULT_STORE_ID): Promise<PaymentMethod[]> {
-  const path = `stores/${storeId}/paymentMethods`;
+  if (!isSupabaseConfigured()) {
+    return getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
+  }
+
   try {
-    const colRef = collection(db, 'stores', storeId, 'paymentMethods');
-    const q = query(colRef, orderBy('sortOrder', 'asc'));
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ ...d.data(), id: d.id } as PaymentMethod));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    const { data, error } = await supabase
+      .from('payment_methods')
+      .select('*')
+      .eq('store_id', storeId)
+      .order('sort_order', { ascending: true });
+
+    if (error) {
+      console.warn('Supabase getPaymentMethods error:', error.message);
+      return getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
+    }
+
+    const methods = (data || []).map(toPaymentMethod);
+    setLocalItem(`payment_methods_${storeId}`, methods);
+    return methods;
+  } catch (err) {
+    console.error('getPaymentMethods exception:', err);
+    return getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
   }
 }
 
-export async function savePaymentMethod(storeId = DEFAULT_STORE_ID, method: Partial<PaymentMethod> & { displayName: string }): Promise<string> {
+export async function savePaymentMethod(
+  storeId = DEFAULT_STORE_ID,
+  method: Partial<PaymentMethod> & { displayName: string }
+): Promise<string> {
   const methodId = method.id || `pm_${Date.now()}`;
-  const path = `stores/${storeId}/paymentMethods/${methodId}`;
+
+  const newMethod: PaymentMethod = {
+    id: methodId,
+    storeId,
+    type: method.type || 'jazzcash',
+    displayName: method.displayName,
+    accountTitle: method.accountTitle || '',
+    accountNumber: method.accountNumber || '',
+    iban: method.iban || '',
+    bankName: method.bankName || '',
+    instructions: method.instructions || '',
+    qrCodeUrl: method.qrCodeUrl || '',
+    requireScreenshot: method.requireScreenshot !== false,
+    requireTransactionReference: method.requireTransactionReference !== false,
+    enabled: method.enabled !== false,
+    sortOrder: method.sortOrder ?? 0,
+    createdAt: method.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const localList = getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
+  const updatedLocal = localList.some(m => m.id === methodId)
+    ? localList.map(m => (m.id === methodId ? newMethod : m))
+    : [...localList, newMethod];
+  setLocalItem(`payment_methods_${storeId}`, updatedLocal);
+
+  if (!isSupabaseConfigured()) return methodId;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'paymentMethods', methodId);
-    const data: PaymentMethod = {
-      id: methodId,
-      storeId,
-      type: method.type || 'jazzcash',
-      displayName: method.displayName,
-      accountTitle: method.accountTitle || '',
-      accountNumber: method.accountNumber || '',
-      iban: method.iban || '',
-      bankName: method.bankName || '',
-      instructions: method.instructions || '',
-      qrCodeUrl: method.qrCodeUrl || '',
-      requireScreenshot: method.requireScreenshot !== false,
-      requireTransactionReference: method.requireTransactionReference !== false,
-      enabled: method.enabled !== false,
-      sortOrder: method.sortOrder ?? 0,
-      createdAt: method.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(docRef, data, { merge: true });
+    const row = fromPaymentMethod(newMethod);
+    const { error } = await supabase
+      .from('payment_methods')
+      .upsert({ ...row, id: methodId, store_id: storeId }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('Supabase savePaymentMethod error:', error.message);
+      throw error;
+    }
+
     return methodId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  } catch (err) {
+    console.error('savePaymentMethod exception:', err);
+    throw err;
   }
 }
 
 export async function deletePaymentMethod(storeId = DEFAULT_STORE_ID, methodId: string): Promise<void> {
-  const path = `stores/${storeId}/paymentMethods/${methodId}`;
+  const localList = getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
+  setLocalItem(`payment_methods_${storeId}`, localList.filter(m => m.id !== methodId));
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    await deleteDoc(doc(db, 'stores', storeId, 'paymentMethods', methodId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
+    const { error } = await supabase
+      .from('payment_methods')
+      .delete()
+      .eq('id', methodId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase deletePaymentMethod error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('deletePaymentMethod exception:', err);
+    throw err;
   }
 }
 
-// ----------------- Orders -----------------
+// ============================================================================
+// 6. Orders
+// ============================================================================
 
-export async function createOrder(storeId = DEFAULT_STORE_ID, orderData: Omit<Order, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+export async function createOrder(
+  storeId = DEFAULT_STORE_ID,
+  orderData: Omit<Order, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<string> {
   const orderId = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const path = `stores/${storeId}/orders/${orderId}`;
+  const order: Order = {
+    ...orderData,
+    id: orderId,
+    accessToken: orderData.accessToken || `tok_${Math.random().toString(36).substring(2, 10)}`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Local cache
+  const localOrders = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  setLocalItem(`orders_${storeId}`, [order, ...localOrders]);
+
+  if (!isSupabaseConfigured()) return orderId;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'orders', orderId);
-    const order: Order = {
-      ...orderData,
-      id: orderId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(docRef, order);
+    const row = fromOrder(order);
+    const { error } = await supabase
+      .from('orders')
+      .insert(row);
+
+    if (error) {
+      console.error('Supabase createOrder error:', error.message);
+      throw error;
+    }
+
     return orderId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+  } catch (err) {
+    console.error('createOrder exception:', err);
+    throw err;
   }
 }
 
 export async function getOrders(storeId = DEFAULT_STORE_ID): Promise<Order[]> {
-  const path = `stores/${storeId}/orders`;
+  if (!isSupabaseConfigured()) {
+    const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+    return local.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
   try {
-    const colRef = collection(db, 'stores', storeId, 'orders');
-    const snap = await getDocs(colRef);
-    const orders = snap.docs.map(d => ({ ...d.data(), id: d.id } as Order));
-    return orders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('store_id', storeId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.warn('Supabase getOrders error:', error.message);
+      const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+      return local.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    const orders = (data || []).map(toOrder);
+    setLocalItem(`orders_${storeId}`, orders);
+    return orders;
+  } catch (err) {
+    console.error('getOrders exception:', err);
+    return getLocalItem<Order[]>(`orders_${storeId}`, []);
   }
 }
 
 export async function getOrderById(storeId = DEFAULT_STORE_ID, orderId: string): Promise<Order | null> {
-  const path = `stores/${storeId}/orders/${orderId}`;
+  const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  const cached = local.find(o => o.id === orderId);
+
+  if (!isSupabaseConfigured()) {
+    return cached || null;
+  }
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'orders', orderId);
-    const snap = await getDoc(docRef);
-    if (!snap.exists()) return null;
-    return snap.data() as Order;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', orderId)
+      .eq('store_id', storeId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Supabase getOrderById error:', error.message);
+      return cached || null;
+    }
+
+    return data ? toOrder(data) : cached || null;
+  } catch (err) {
+    console.error('getOrderById exception:', err);
+    return cached || null;
   }
 }
 
@@ -463,15 +782,31 @@ export async function updateOrderStatus(
   orderId: string,
   orderStatus: Order['orderStatus']
 ): Promise<void> {
-  const path = `stores/${storeId}/orders/${orderId}`;
+  const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  setLocalItem(
+    `orders_${storeId}`,
+    local.map(o => (o.id === orderId ? { ...o, orderStatus, updatedAt: new Date().toISOString() } : o))
+  );
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'orders', orderId);
-    await updateDoc(docRef, {
-      orderStatus,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
+    const { error } = await supabase
+      .from('orders')
+      .update({
+        order_status: orderStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase updateOrderStatus error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('updateOrderStatus exception:', err);
+    throw err;
   }
 }
 
@@ -480,15 +815,31 @@ export async function updatePaymentStatus(
   orderId: string,
   paymentStatus: Order['paymentStatus']
 ): Promise<void> {
-  const path = `stores/${storeId}/orders/${orderId}`;
+  const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  setLocalItem(
+    `orders_${storeId}`,
+    local.map(o => (o.id === orderId ? { ...o, paymentStatus, updatedAt: new Date().toISOString() } : o))
+  );
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'orders', orderId);
-    await updateDoc(docRef, {
-      paymentStatus,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
+    const { error } = await supabase
+      .from('orders')
+      .update({
+        payment_status: paymentStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase updatePaymentStatus error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('updatePaymentStatus exception:', err);
+    throw err;
   }
 }
 
@@ -498,24 +849,53 @@ export async function updateOrderPaymentProof(
   paymentProofUrl?: string,
   transactionReference?: string
 ): Promise<void> {
-  const path = `stores/${storeId}/orders/${orderId}`;
+  const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  setLocalItem(
+    `orders_${storeId}`,
+    local.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          paymentProofUrl: paymentProofUrl || o.paymentProofUrl,
+          transactionReference: transactionReference || o.transactionReference,
+          paymentStatus: paymentProofUrl || transactionReference ? 'payment_submitted' : o.paymentStatus,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return o;
+    })
+  );
+
+  if (!isSupabaseConfigured()) return;
+
   try {
-    const docRef = doc(db, 'stores', storeId, 'orders', orderId);
     const updates: Record<string, any> = {
-      updatedAt: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
-    if (paymentProofUrl) updates.paymentProofUrl = paymentProofUrl;
-    if (transactionReference) updates.transactionReference = transactionReference;
-    if (paymentProofUrl || transactionReference) updates.paymentStatus = 'payment_submitted';
-    await updateDoc(docRef, updates);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
+    if (paymentProofUrl) updates.payment_proof_url = paymentProofUrl;
+    if (transactionReference) updates.transaction_reference = transactionReference;
+    if (paymentProofUrl || transactionReference) updates.payment_status = 'payment_submitted';
+
+    const { error } = await supabase
+      .from('orders')
+      .update(updates)
+      .eq('id', orderId)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Supabase updateOrderPaymentProof error:', error.message);
+      throw error;
+    }
+  } catch (err) {
+    console.error('updateOrderPaymentProof exception:', err);
+    throw err;
   }
 }
 
-/**
- * Setup Real-time listener for store data
- */
+// ============================================================================
+// 7. Real-Time Store Subscription (Supabase Realtime Channel)
+// ============================================================================
+
 export function subscribeStoreData(
   storeId = DEFAULT_STORE_ID,
   callbacks: {
@@ -527,91 +907,115 @@ export function subscribeStoreData(
     onOrders?: (orders: Order[]) => void;
   }
 ): () => void {
-  const unsubs: (() => void)[] = [];
+  let isMounted = true;
 
-  // Config listener
-  const configDocRef = doc(db, 'stores', storeId);
-  const unsubConfig = onSnapshot(
-    configDocRef,
-    snap => {
-      if (snap.exists()) {
-        callbacks.onStoreConfig?.(snap.data() as StoreConfig);
-      } else {
-        callbacks.onStoreConfig?.({ ...DEFAULT_STORE_CONFIG, id: storeId });
+  // Immediate initial load from Supabase / local cache
+  const refreshAll = async () => {
+    try {
+      const [config, categories, products, offers, paymentMethods] = await Promise.all([
+        getStoreConfig(storeId),
+        getCategories(storeId),
+        getProducts(storeId),
+        getOffers(storeId),
+        getPaymentMethods(storeId),
+      ]);
+
+      if (!isMounted) return;
+      callbacks.onStoreConfig?.(config);
+      callbacks.onCategories?.(categories);
+      callbacks.onProducts?.(products);
+      callbacks.onOffers?.(offers);
+      callbacks.onPaymentMethods?.(paymentMethods);
+
+      if (callbacks.onOrders) {
+        const orders = await getOrders(storeId);
+        if (isMounted) callbacks.onOrders(orders);
       }
-    },
-    err => handleFirestoreError(err, OperationType.GET, `stores/${storeId}`)
-  );
-  unsubs.push(unsubConfig);
+    } catch (err) {
+      console.warn('Initial data load warning:', err);
+    }
+  };
 
-  // Categories listener
-  const catColRef = collection(db, 'stores', storeId, 'categories');
-  const unsubCats = onSnapshot(
-    catColRef,
-    snap => {
-      const cats = snap.docs.map(d => ({ ...d.data(), id: d.id } as Category));
-      callbacks.onCategories?.(cats.sort((a, b) => a.sortOrder - b.sortOrder));
-    },
-    err => handleFirestoreError(err, OperationType.LIST, `stores/${storeId}/categories`)
-  );
-  unsubs.push(unsubCats);
+  refreshAll();
 
-  // Products listener
-  const prodColRef = collection(db, 'stores', storeId, 'products');
-  const unsubProds = onSnapshot(
-    prodColRef,
-    snap => {
-      const prods = snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-      callbacks.onProducts?.(prods);
-    },
-    err => handleFirestoreError(err, OperationType.LIST, `stores/${storeId}/products`)
-  );
-  unsubs.push(unsubProds);
-
-  // Offers listener
-  const offerColRef = collection(db, 'stores', storeId, 'offers');
-  const unsubOffers = onSnapshot(
-    offerColRef,
-    snap => {
-      const offs = snap.docs.map(d => ({ ...d.data(), id: d.id } as Offer));
-      callbacks.onOffers?.(offs);
-    },
-    err => handleFirestoreError(err, OperationType.LIST, `stores/${storeId}/offers`)
-  );
-  unsubs.push(unsubOffers);
-
-  // Payment Methods listener
-  const pmColRef = collection(db, 'stores', storeId, 'paymentMethods');
-  const unsubPM = onSnapshot(
-    pmColRef,
-    snap => {
-      const pms = snap.docs.map(d => ({ ...d.data(), id: d.id } as PaymentMethod));
-      callbacks.onPaymentMethods?.(pms.sort((a, b) => a.sortOrder - b.sortOrder));
-    },
-    err => handleFirestoreError(err, OperationType.LIST, `stores/${storeId}/paymentMethods`)
-  );
-  unsubs.push(unsubPM);
-
-  // Orders listener (for admin/store management)
-  if (callbacks.onOrders) {
-    const ordersColRef = collection(db, 'stores', storeId, 'orders');
-    const unsubOrders = onSnapshot(
-      ordersColRef,
-      snap => {
-        const ords = snap.docs.map(d => ({ ...d.data(), id: d.id } as Order));
-        callbacks.onOrders?.(
-          ords.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-        );
-      },
-      err => {
-        // Non-fatal if shopper is viewing storefront without admin permissions
-        console.warn('Orders subscription note:', err.message);
+  // If Supabase credentials are not configured, poll local changes periodically or return no-op
+  if (!isSupabaseConfigured()) {
+    const interval = setInterval(() => {
+      if (isMounted) {
+        callbacks.onStoreConfig?.(getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId }));
+        callbacks.onCategories?.(getLocalItem<Category[]>(`categories_${storeId}`, []));
+        callbacks.onProducts?.(getLocalItem<Product[]>(`products_${storeId}`, []));
+        callbacks.onOffers?.(getLocalItem<Offer[]>(`offers_${storeId}`, []));
+        callbacks.onPaymentMethods?.(getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []));
+        if (callbacks.onOrders) {
+          callbacks.onOrders(getLocalItem<Order[]>(`orders_${storeId}`, []));
+        }
       }
-    );
-    unsubs.push(unsubOrders);
+    }, 4000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }
 
+  // Subscribe to Supabase Postgres real-time changes
+  const channel = supabase
+    .channel(`store_channel_${storeId}_${Date.now()}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'stores', filter: `id=eq.${storeId}` },
+      async () => {
+        const conf = await getStoreConfig(storeId);
+        if (isMounted) callbacks.onStoreConfig?.(conf);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'categories', filter: `store_id=eq.${storeId}` },
+      async () => {
+        const cats = await getCategories(storeId);
+        if (isMounted) callbacks.onCategories?.(cats);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'products', filter: `store_id=eq.${storeId}` },
+      async () => {
+        const prods = await getProducts(storeId);
+        if (isMounted) callbacks.onProducts?.(prods);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'offers', filter: `store_id=eq.${storeId}` },
+      async () => {
+        const offs = await getOffers(storeId);
+        if (isMounted) callbacks.onOffers?.(offs);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'payment_methods', filter: `store_id=eq.${storeId}` },
+      async () => {
+        const pms = await getPaymentMethods(storeId);
+        if (isMounted) callbacks.onPaymentMethods?.(pms);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` },
+      async () => {
+        if (callbacks.onOrders) {
+          const ords = await getOrders(storeId);
+          if (isMounted) callbacks.onOrders(ords);
+        }
+      }
+    )
+    .subscribe();
+
   return () => {
-    unsubs.forEach(u => u());
+    isMounted = false;
+    supabase.removeChannel(channel);
   };
 }
