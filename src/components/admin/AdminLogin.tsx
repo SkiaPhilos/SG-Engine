@@ -134,7 +134,11 @@ export const AdminLogin: React.FC = () => {
         setError(
           'Email address not yet confirmed. Please check your inbox for the Supabase confirmation email, or disable "Confirm email" in Supabase Auth settings.'
         );
-      } else if (msg.includes('not yet configured')) {
+      } else if (
+        msg.includes('not yet configured') ||
+        msg.includes('supabase') ||
+        msg.includes('vite_supabase')
+      ) {
         setError(err.message);
       } else if (msg.includes('rate limit') || msg.includes('too many')) {
         setError('Too many attempts. Please wait a moment before trying again.');

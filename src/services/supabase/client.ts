@@ -1,8 +1,21 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Retrieve environment variables from Vite runtime
-const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+// Retrieve environment variables from Vite runtime with resilient sanitization
+function sanitizeEnv(val: any): string {
+  if (!val || typeof val !== 'string') return '';
+  let clean = val.trim();
+  // Remove wrapping single or double quotes if present from copy-paste in Vercel UI
+  if (
+    (clean.startsWith('"') && clean.endsWith('"')) ||
+    (clean.startsWith("'") && clean.endsWith("'"))
+  ) {
+    clean = clean.slice(1, -1).trim();
+  }
+  return clean;
+}
+
+const supabaseUrl = sanitizeEnv(import.meta.env.VITE_SUPABASE_URL);
+const supabaseAnonKey = sanitizeEnv(import.meta.env.VITE_SUPABASE_ANON_KEY);
 
 let supabaseInstance: SupabaseClient | null = null;
 
@@ -10,12 +23,20 @@ let supabaseInstance: SupabaseClient | null = null;
  * Checks whether valid Supabase configuration credentials are provided.
  */
 export function isSupabaseConfigured(): boolean {
-  return Boolean(
+  const hasUrl = Boolean(
     supabaseUrl &&
-    (supabaseUrl.startsWith('https://') || supabaseUrl.startsWith('http://')) &&
-    supabaseAnonKey &&
-    supabaseAnonKey.length > 10
+    (supabaseUrl.startsWith('https://') || supabaseUrl.startsWith('http://'))
   );
+  const hasKey = Boolean(supabaseAnonKey && supabaseAnonKey.length > 20);
+  return hasUrl && hasKey;
+}
+
+export function getSupabaseEnvDiagnostics(): { hasUrl: boolean; hasKey: boolean; urlPreview?: string } {
+  return {
+    hasUrl: Boolean(supabaseUrl),
+    hasKey: Boolean(supabaseAnonKey),
+    urlPreview: supabaseUrl ? `${supabaseUrl.substring(0, 16)}...` : undefined,
+  };
 }
 
 /**

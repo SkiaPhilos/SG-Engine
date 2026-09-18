@@ -1,5 +1,5 @@
 import { User } from '@supabase/supabase-js';
-import { supabase, isSupabaseConfigured } from '../supabase/client';
+import { supabase, isSupabaseConfigured, getSupabaseEnvDiagnostics } from '../supabase/client';
 
 export const BOOTSTRAP_ADMIN_EMAIL = (
   (import.meta.env.VITE_ADMIN_EMAIL as string) ||
@@ -7,6 +7,20 @@ export const BOOTSTRAP_ADMIN_EMAIL = (
 ).trim().toLowerCase();
 
 export type { User };
+
+function getMissingConfigMessage(): string {
+  const diag = getSupabaseEnvDiagnostics();
+  if (!diag.hasUrl && !diag.hasKey) {
+    return 'Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing in this build. If you just added them in Vercel, please trigger a Redeploy (with "Clear build cache") so Vite can bake them into the client bundle.';
+  }
+  if (!diag.hasUrl) {
+    return 'VITE_SUPABASE_URL is missing. Please ensure it begins with https:// in your Vercel Environment Variables and redeploy.';
+  }
+  if (!diag.hasKey) {
+    return 'VITE_SUPABASE_ANON_KEY is missing or invalid. Please paste your Supabase Project anon public key in Vercel Environment Variables and redeploy.';
+  }
+  return 'Supabase credentials appear incomplete or invalid. Please check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel Settings > Environment Variables.';
+}
 
 export interface AdminAuthState {
   user: User | null;
@@ -43,9 +57,7 @@ export async function recordAdminIfBootstrap(user: User): Promise<void> {
  */
 export async function loginWithEmail(email: string, pass: string): Promise<User> {
   if (!isSupabaseConfigured()) {
-    throw new Error(
-      'Supabase credentials are not yet configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
-    );
+    throw new Error(getMissingConfigMessage());
   }
 
   const cleanEmail = email.trim().toLowerCase();
@@ -73,9 +85,7 @@ export async function loginWithEmail(email: string, pass: string): Promise<User>
  */
 export async function signUpAdmin(email: string, pass: string): Promise<{ user: User | null; sessionActive: boolean; message?: string }> {
   if (!isSupabaseConfigured()) {
-    throw new Error(
-      'Supabase credentials are not yet configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
-    );
+    throw new Error(getMissingConfigMessage());
   }
 
   const cleanEmail = email.trim().toLowerCase();
@@ -108,9 +118,7 @@ export async function signUpAdmin(email: string, pass: string): Promise<{ user: 
  */
 export async function sendPasswordReset(email: string): Promise<void> {
   if (!isSupabaseConfigured()) {
-    throw new Error(
-      'Supabase credentials are not yet configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
-    );
+    throw new Error(getMissingConfigMessage());
   }
 
   const cleanEmail = email.trim().toLowerCase();
@@ -128,9 +136,7 @@ export async function sendPasswordReset(email: string): Promise<void> {
  */
 export async function loginWithGoogle(): Promise<void> {
   if (!isSupabaseConfigured()) {
-    throw new Error(
-      'Supabase credentials are not yet configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
-    );
+    throw new Error(getMissingConfigMessage());
   }
 
   const { error } = await supabase.auth.signInWithOAuth({
