@@ -56,7 +56,19 @@ export const OrderConfirmationView: React.FC = () => {
 
     let isMounted = true;
     const fetchOrder = () => {
-      getOrderById(storeId, targetId!).then(ord => {
+      let tokenFromUrl: string | undefined;
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        tokenFromUrl = params.get('token') || params.get('accessToken') || undefined;
+        if (!tokenFromUrl && window.location.hash.includes('token=')) {
+          const hashQuery = window.location.hash.split('?')[1];
+          if (hashQuery) {
+            tokenFromUrl = new URLSearchParams(hashQuery).get('token') || new URLSearchParams(hashQuery).get('accessToken') || undefined;
+          }
+        }
+      }
+
+      getOrderById(storeId, targetId!, tokenFromUrl || order?.accessToken).then(ord => {
         if (!isMounted) return;
         setOrder(ord);
         if (ord?.transactionReference) setTidInput(ord.transactionReference);
@@ -81,7 +93,13 @@ export const OrderConfirmationView: React.FC = () => {
     if (!activeOrderId || (!tidInput.trim() && !proofImage)) return;
     setIsUpdating(true);
     try {
-      await updateOrderPaymentProof(storeId, activeOrderId, proofImage || undefined, tidInput.trim() || undefined);
+      await updateOrderPaymentProof(
+        storeId,
+        activeOrderId,
+        proofImage || undefined,
+        tidInput.trim() || undefined,
+        order?.accessToken
+      );
       const updated = await getOrderById(storeId, activeOrderId);
       setOrder(updated);
     } catch (e) {

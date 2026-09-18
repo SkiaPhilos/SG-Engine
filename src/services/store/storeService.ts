@@ -21,6 +21,9 @@ import {
   PaymentMethod,
   Order,
   HomepageSection,
+  InventoryHoldResult,
+  OrderEvent,
+  OrderEventType,
 } from '../../types/store';
 
 export const DEFAULT_STORE_ID = 'default';
@@ -714,6 +717,21 @@ export async function createOrder(
       throw error;
     }
 
+    // Append audit trail event for order creation
+    await logOrderEvent({
+      orderId,
+      storeId,
+      eventType: 'order_created',
+      toStatus: order.orderStatus,
+      actorType: 'customer',
+      notes: `Order created via ${order.paymentMethodName}`,
+      metadata: {
+        total: order.total,
+        itemCount: order.items?.length || 0,
+        paymentStatus: order.paymentStatus,
+      },
+    });
+
     return orderId;
   } catch (err) {
     console.error('createOrder exception:', err);
@@ -749,9 +767,14 @@ export async function getOrders(storeId = DEFAULT_STORE_ID): Promise<Order[]> {
   }
 }
 
-export async function getOrderById(storeId = DEFAULT_STORE_ID, orderId: string): Promise<Order | null> {
+export async function getOrderById(
+  storeId = DEFAULT_STORE_ID,
+  orderId: string,
+  accessToken?: string
+): Promise<Order | null> {
   const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
   const cached = local.find(o => o.id === orderId);
+  const resolvedToken = accessToken || cached?.accessToken;
 
   if (!isSupabaseConfigured()) {
     return cached || null;
@@ -765,12 +788,48 @@ export async function getOrderById(storeId = DEFAULT_STORE_ID, orderId: string):
       .eq('store_id', storeId)
       .maybeSingle();
 
-    if (error) {
-      console.warn('Supabase getOrderById error:', error.message);
-      return cached || null;
+    if (!error && data) {
+      return toOrder(data);
     }
 
-    return data ? toOrder(data) : cached || null;
+    // Fallback: If direct SELECT is denied by hardened RLS, try secure customer RPC using order accessToken
+    if (resolvedToken) {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('get_customer_order', {
+        p_order_id: orderId,
+        p_access_token: resolvedToken,
+      });
+
+      if (!rpcError && rpcData && rpcData.length > 0) {
+        const row = rpcData[0];
+        return {
+          id: row.id,
+          storeId: row.store_id,
+          orderNumber: row.order_number,
+          accessToken: resolvedToken,
+          customer: row.customer,
+          items: Array.isArray(row.items) ? row.items : [],
+          appliedOffers: Array.isArray(row.applied_offers) ? row.applied_offers : [],
+          subtotal: Number(row.subtotal) || 0,
+          discountTotal: Number(row.discount_total) || 0,
+          deliveryFee: Number(row.delivery_fee) || 0,
+          total: Number(row.total) || 0,
+          paymentMethodId: row.payment_method_id,
+          paymentMethodName: row.payment_method_name,
+          paymentStatus: row.payment_status,
+          orderStatus: row.order_status,
+          transactionReference: row.transaction_reference || undefined,
+          paymentProofUrl: row.payment_proof_url || undefined,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      }
+    }
+
+    if (error) {
+      console.warn('Supabase getOrderById error:', error.message);
+    }
+
+    return cached || null;
   } catch (err) {
     console.error('getOrderById exception:', err);
     return cached || null;
@@ -780,9 +839,13 @@ export async function getOrderById(storeId = DEFAULT_STORE_ID, orderId: string):
 export async function updateOrderStatus(
   storeId = DEFAULT_STORE_ID,
   orderId: string,
-  orderStatus: Order['orderStatus']
+  orderStatus: Order['orderStatus'],
+  actor: { type: 'admin' | 'system' | 'customer'; id?: string; notes?: string } = { type: 'admin' }
 ): Promise<void> {
   const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  const existingOrder = local.find(o => o.id === orderId);
+  const fromStatus = existingOrder?.orderStatus;
+
   setLocalItem(
     `orders_${storeId}`,
     local.map(o => (o.id === orderId ? { ...o, orderStatus, updatedAt: new Date().toISOString() } : o))
@@ -804,6 +867,18 @@ export async function updateOrderStatus(
       console.error('Supabase updateOrderStatus error:', error.message);
       throw error;
     }
+
+    // Append audit trail event
+    await logOrderEvent({
+      orderId,
+      storeId,
+      eventType: 'status_changed',
+      fromStatus,
+      toStatus: orderStatus,
+      actorType: actor.type,
+      actorId: actor.id,
+      notes: actor.notes || `Order status updated to ${orderStatus}`,
+    });
   } catch (err) {
     console.error('updateOrderStatus exception:', err);
     throw err;
@@ -813,9 +888,13 @@ export async function updateOrderStatus(
 export async function updatePaymentStatus(
   storeId = DEFAULT_STORE_ID,
   orderId: string,
-  paymentStatus: Order['paymentStatus']
+  paymentStatus: Order['paymentStatus'],
+  actor: { type: 'admin' | 'system' | 'customer'; id?: string; notes?: string } = { type: 'admin' }
 ): Promise<void> {
   const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  const existingOrder = local.find(o => o.id === orderId);
+  const fromStatus = existingOrder?.paymentStatus;
+
   setLocalItem(
     `orders_${storeId}`,
     local.map(o => (o.id === orderId ? { ...o, paymentStatus, updatedAt: new Date().toISOString() } : o))
@@ -837,6 +916,18 @@ export async function updatePaymentStatus(
       console.error('Supabase updatePaymentStatus error:', error.message);
       throw error;
     }
+
+    // Append audit trail event
+    await logOrderEvent({
+      orderId,
+      storeId,
+      eventType: 'payment_status_changed',
+      fromStatus,
+      toStatus: paymentStatus,
+      actorType: actor.type,
+      actorId: actor.id,
+      notes: actor.notes || `Payment status updated to ${paymentStatus}`,
+    });
   } catch (err) {
     console.error('updatePaymentStatus exception:', err);
     throw err;
@@ -847,9 +938,13 @@ export async function updateOrderPaymentProof(
   storeId = DEFAULT_STORE_ID,
   orderId: string,
   paymentProofUrl?: string,
-  transactionReference?: string
+  transactionReference?: string,
+  accessToken?: string
 ): Promise<void> {
   const local = getLocalItem<Order[]>(`orders_${storeId}`, []);
+  const cachedOrder = local.find(o => o.id === orderId);
+  const resolvedToken = accessToken || cachedOrder?.accessToken;
+
   setLocalItem(
     `orders_${storeId}`,
     local.map(o => {
@@ -869,6 +964,35 @@ export async function updateOrderPaymentProof(
   if (!isSupabaseConfigured()) return;
 
   try {
+    // If accessToken is available, use hardened security definer RPC
+    if (resolvedToken) {
+      const { error: rpcError } = await supabase.rpc('submit_order_payment_proof', {
+        p_order_id: orderId,
+        p_access_token: resolvedToken,
+        p_payment_proof_url: paymentProofUrl || null,
+        p_transaction_reference: transactionReference || null,
+      });
+
+      if (!rpcError) {
+        // Append audit trail event
+        await logOrderEvent({
+          orderId,
+          storeId,
+          eventType: 'payment_proof_submitted',
+          fromStatus: 'unpaid',
+          toStatus: 'payment_submitted',
+          actorType: 'customer',
+          notes: 'Customer uploaded proof of payment or entered reference number via secure RPC',
+          metadata: {
+            hasScreenshot: Boolean(paymentProofUrl),
+            transactionReference: transactionReference || null,
+          },
+        });
+        return;
+      }
+    }
+
+    // Direct table update fallback (for admin sessions or stores where direct update is permitted)
     const updates: Record<string, any> = {
       updated_at: new Date().toISOString(),
     };
@@ -886,9 +1010,245 @@ export async function updateOrderPaymentProof(
       console.error('Supabase updateOrderPaymentProof error:', error.message);
       throw error;
     }
+
+    // Append audit trail event
+    await logOrderEvent({
+      orderId,
+      storeId,
+      eventType: 'payment_proof_submitted',
+      fromStatus: 'unpaid',
+      toStatus: 'payment_submitted',
+      actorType: 'customer',
+      notes: 'Customer uploaded proof of payment or entered reference number',
+      metadata: {
+        hasScreenshot: Boolean(paymentProofUrl),
+        transactionReference: transactionReference || null,
+      },
+    });
   } catch (err) {
     console.error('updateOrderPaymentProof exception:', err);
     throw err;
+  }
+}
+
+// ============================================================================
+// 6.4 Order Audit Trail (Events)
+// ============================================================================
+
+export async function logOrderEvent(event: {
+  orderId: string;
+  storeId?: string;
+  eventType: OrderEventType | string;
+  fromStatus?: string | null;
+  toStatus?: string | null;
+  actorType?: 'admin' | 'system' | 'customer';
+  actorId?: string | null;
+  notes?: string | null;
+  metadata?: Record<string, any>;
+}): Promise<void> {
+  const storeId = event.storeId || DEFAULT_STORE_ID;
+  const localKey = `order_events_${event.orderId}`;
+  const localList = getLocalItem<OrderEvent[]>(localKey, []);
+  const newLocalEvent: OrderEvent = {
+    id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    orderId: event.orderId,
+    storeId,
+    eventType: event.eventType,
+    fromStatus: event.fromStatus || null,
+    toStatus: event.toStatus || null,
+    actorType: event.actorType || 'system',
+    actorId: event.actorId || null,
+    notes: event.notes || null,
+    metadata: event.metadata || {},
+    createdAt: new Date().toISOString(),
+  };
+  setLocalItem(localKey, [...localList, newLocalEvent]);
+
+  if (!isSupabaseConfigured()) return;
+
+  try {
+    const { error } = await supabase.rpc('log_order_event', {
+      p_order_id: event.orderId,
+      p_store_id: storeId,
+      p_event_type: event.eventType,
+      p_from_status: event.fromStatus || null,
+      p_to_status: event.toStatus || null,
+      p_actor_type: event.actorType || 'system',
+      p_actor_id: event.actorId || null,
+      p_notes: event.notes || null,
+      p_metadata: event.metadata || {},
+    });
+
+    if (error) {
+      console.warn('log_order_event RPC notice:', error.message);
+    }
+  } catch (err) {
+    console.warn('logOrderEvent exception:', err);
+  }
+}
+
+export async function getOrderEvents(orderId: string, accessToken?: string): Promise<OrderEvent[]> {
+  const localKey = `order_events_${orderId}`;
+  const localList = getLocalItem<OrderEvent[]>(localKey, []);
+
+  if (!isSupabaseConfigured()) {
+    return localList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
+  try {
+    // Try RPC first for authorization check (admin or token-guarded customer)
+    const { data, error } = await supabase.rpc('get_order_events', {
+      p_order_id: orderId,
+      p_access_token: accessToken || null,
+    });
+
+    if (!error && Array.isArray(data)) {
+      const mapped: OrderEvent[] = data.map((d: any) => ({
+        id: d.id,
+        orderId: d.order_id,
+        storeId: d.store_id,
+        eventType: d.event_type,
+        fromStatus: d.from_status,
+        toStatus: d.to_status,
+        actorType: d.actor_type,
+        actorId: d.actor_id,
+        notes: d.notes,
+        metadata: d.metadata || {},
+        createdAt: d.created_at,
+      }));
+      setLocalItem(localKey, mapped);
+      return mapped;
+    }
+
+    // Direct table fallback if authenticated admin
+    const { data: directData, error: directErr } = await supabase
+      .from('order_events')
+      .select('*')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: true });
+
+    if (directErr) {
+      console.warn('getOrderEvents error:', directErr.message);
+      return localList;
+    }
+
+    const mapped: OrderEvent[] = (directData || []).map((d: any) => ({
+      id: d.id,
+      orderId: d.order_id,
+      storeId: d.store_id,
+      eventType: d.event_type,
+      fromStatus: d.from_status,
+      toStatus: d.to_status,
+      actorType: d.actor_type,
+      actorId: d.actor_id,
+      notes: d.notes,
+      metadata: d.metadata || {},
+      createdAt: d.created_at,
+    }));
+    setLocalItem(localKey, mapped);
+    return mapped;
+  } catch (err) {
+    console.error('getOrderEvents exception:', err);
+    return localList;
+  }
+}
+
+// ============================================================================
+// 6.5 Inventory Reservation & Stock Hold (Anti-Race Condition Stored Procedures)
+// ============================================================================
+
+/**
+ * Creates a 15-minute atomic stock reservation hold for items in checkout.
+ * Prevents race conditions where two customers buy the last item simultaneously.
+ */
+export async function createInventoryHold(
+  storeId = DEFAULT_STORE_ID,
+  items: Array<{ productId: string; quantity: number }>,
+  orderId?: string,
+  durationMinutes = 15
+): Promise<InventoryHoldResult> {
+  if (!items || items.length === 0) {
+    return { success: true };
+  }
+
+  if (!isSupabaseConfigured()) {
+    // Local fallback for offline / mock testing
+    return {
+      success: true,
+      holdId: `local_hold_${Date.now()}`,
+      expiresAt: new Date(Date.now() + durationMinutes * 60 * 1000).toISOString(),
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('create_inventory_hold', {
+      p_store_id: storeId,
+      p_items: items.map(it => ({ productId: it.productId, quantity: it.quantity })),
+      p_order_id: orderId || null,
+      p_duration_minutes: durationMinutes,
+    });
+
+    if (error) {
+      console.warn('Supabase create_inventory_hold RPC warning:', error.message);
+      // If RPC not yet applied in DB, fail open with fallback holdId so customer can still checkout
+      return { success: true, holdId: `fallback_hold_${Date.now()}` };
+    }
+
+    return (data as InventoryHoldResult) || { success: true };
+  } catch (err: any) {
+    console.warn('createInventoryHold exception:', err);
+    return { success: true, holdId: `fallback_hold_${Date.now()}` };
+  }
+}
+
+/**
+ * Releases an active inventory hold when checkout is cancelled or timed out.
+ */
+export async function releaseInventoryHold(
+  holdId?: string,
+  orderId?: string
+): Promise<{ success: boolean; releasedCount?: number }> {
+  if (!isSupabaseConfigured() || (!holdId && !orderId)) return { success: true };
+
+  try {
+    const { data, error } = await supabase.rpc('release_inventory_hold', {
+      p_hold_id: holdId || null,
+      p_order_id: orderId || null,
+    });
+    if (error) {
+      console.warn('release_inventory_hold RPC warning:', error.message);
+      return { success: false };
+    }
+    return data || { success: true };
+  } catch (err) {
+    console.warn('releaseInventoryHold exception:', err);
+    return { success: false };
+  }
+}
+
+/**
+ * Consumes an active inventory hold and permanently deducts physical stock.
+ * Called when an order is finalized (manual transfer placed or Safepay paid).
+ */
+export async function consumeInventoryHold(
+  holdId?: string,
+  orderId?: string
+): Promise<{ success: boolean; consumedCount?: number }> {
+  if (!isSupabaseConfigured() || (!holdId && !orderId)) return { success: true };
+
+  try {
+    const { data, error } = await supabase.rpc('consume_inventory_hold', {
+      p_hold_id: holdId || null,
+      p_order_id: orderId || null,
+    });
+    if (error) {
+      console.warn('consume_inventory_hold RPC warning:', error.message);
+      return { success: false };
+    }
+    return data || { success: true };
+  } catch (err) {
+    console.warn('consumeInventoryHold exception:', err);
+    return { success: false };
   }
 }
 

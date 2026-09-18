@@ -162,6 +162,123 @@ CREATE TABLE IF NOT EXISTS public.store_private_settings (
   CONSTRAINT uq_private_settings_store_key UNIQUE(store_id, setting_key)
 );
 
+-- 2.9 Inventory Reservations Table (15-Minute Atomic Stock Hold)
+CREATE TABLE IF NOT EXISTS public.inventory_reservations (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hold_id UUID NOT NULL,
+  store_id TEXT NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  order_id TEXT REFERENCES public.orders(id) ON DELETE SET NULL,
+  product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'consumed', 'released', 'expired')),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '15 minutes'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 2.10 Idempotency Keys Table (Prevents Double Fulfillment on Retried Webhooks)
+CREATE TABLE IF NOT EXISTS public.idempotency_keys (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  key TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'safepay_webhook',
+  request_payload JSONB,
+  response_status TEXT NOT NULL DEFAULT 'processing' CHECK (response_status IN ('processing', 'completed', 'failed')),
+  order_id TEXT REFERENCES public.orders(id) ON DELETE SET NULL,
+  locked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_idempotency_key_scope UNIQUE(key, scope)
+);
+
+-- 2.11 Order Events Table (Immutable Order Transition & Audit Trail)
+CREATE TABLE IF NOT EXISTS public.order_events (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  order_id TEXT NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
+  store_id TEXT NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL, -- e.g. 'order_created', 'status_changed', 'payment_status_changed', 'payment_proof_submitted', 'safepay_webhook_paid'
+  from_status TEXT,
+  to_status TEXT,
+  actor_type TEXT NOT NULL CHECK (actor_type IN ('admin', 'system', 'customer')),
+  actor_id TEXT, -- admin auth UID, 'system', or customer access token / IP / session
+  notes TEXT,
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
+-- 2.12 AUTOMATED UPDATED_AT TIMESTAMP TRIGGERS
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.trigger_set_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_admins ON public.admins;
+CREATE TRIGGER trg_set_updated_at_admins
+  BEFORE UPDATE ON public.admins
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_stores ON public.stores;
+CREATE TRIGGER trg_set_updated_at_stores
+  BEFORE UPDATE ON public.stores
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_categories ON public.categories;
+CREATE TRIGGER trg_set_updated_at_categories
+  BEFORE UPDATE ON public.categories
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_products ON public.products;
+CREATE TRIGGER trg_set_updated_at_products
+  BEFORE UPDATE ON public.products
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_offers ON public.offers;
+CREATE TRIGGER trg_set_updated_at_offers
+  BEFORE UPDATE ON public.offers
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_payment_methods ON public.payment_methods;
+CREATE TRIGGER trg_set_updated_at_payment_methods
+  BEFORE UPDATE ON public.payment_methods
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_orders ON public.orders;
+CREATE TRIGGER trg_set_updated_at_orders
+  BEFORE UPDATE ON public.orders
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_store_private_settings ON public.store_private_settings;
+CREATE TRIGGER trg_set_updated_at_store_private_settings
+  BEFORE UPDATE ON public.store_private_settings
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_inventory_reservations ON public.inventory_reservations;
+CREATE TRIGGER trg_set_updated_at_inventory_reservations
+  BEFORE UPDATE ON public.inventory_reservations
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_set_updated_at_idempotency_keys ON public.idempotency_keys;
+CREATE TRIGGER trg_set_updated_at_idempotency_keys
+  BEFORE UPDATE ON public.idempotency_keys
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_set_updated_at();
+
 -- ============================================================================
 -- 3. INDEXES FOR OPTIMAL QUERY PERFORMANCE
 -- ============================================================================
@@ -173,6 +290,13 @@ CREATE INDEX IF NOT EXISTS idx_payment_methods_store_id ON public.payment_method
 CREATE INDEX IF NOT EXISTS idx_orders_store_created ON public.orders(store_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_id_token ON public.orders(id, access_token);
 CREATE INDEX IF NOT EXISTS idx_orders_tracker ON public.orders(safepay_tracker) WHERE safepay_tracker IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_reservations_hold_id ON public.inventory_reservations(hold_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_reservations_order_id ON public.inventory_reservations(order_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_reservations_lookup ON public.inventory_reservations(product_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_idempotency_keys_key_scope ON public.idempotency_keys(key, scope);
+CREATE INDEX IF NOT EXISTS idx_idempotency_keys_order_id ON public.idempotency_keys(order_id);
+CREATE INDEX IF NOT EXISTS idx_order_events_order_id ON public.order_events(order_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_order_events_store_id ON public.order_events(store_id, created_at DESC);
 
 -- ============================================================================
 -- 4. RBAC HELPER FUNCTION
@@ -209,6 +333,9 @@ ALTER TABLE public.offers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payment_methods ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.store_private_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_reservations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_events ENABLE ROW LEVEL SECURITY;
 
 -- 5.1 Admins RLS
 DROP POLICY IF EXISTS "Admins read self or superadmin" ON public.admins;
@@ -304,6 +431,45 @@ CREATE POLICY "Orders admin delete" ON public.orders
 -- 5.8 Store Private Settings RLS (Exclusively Service Role)
 DROP POLICY IF EXISTS "Private settings service role only" ON public.store_private_settings;
 CREATE POLICY "Private settings service role only" ON public.store_private_settings
+  FOR ALL TO service_role
+  USING (true);
+
+-- 5.9 Inventory Reservations RLS (Direct access admin & service_role only; shoppers use RPCs)
+DROP POLICY IF EXISTS "Admins manage inventory reservations" ON public.inventory_reservations;
+CREATE POLICY "Admins manage inventory reservations" ON public.inventory_reservations
+  FOR ALL TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Service role manages inventory reservations" ON public.inventory_reservations;
+CREATE POLICY "Service role manages inventory reservations" ON public.inventory_reservations
+  FOR ALL TO service_role
+  USING (true);
+
+-- 5.10 Idempotency Keys RLS (Exclusively Service Role, Admin read-only inspection)
+DROP POLICY IF EXISTS "Admins read idempotency keys" ON public.idempotency_keys;
+CREATE POLICY "Admins read idempotency keys" ON public.idempotency_keys
+  FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+DROP POLICY IF EXISTS "Service role manages idempotency keys" ON public.idempotency_keys;
+CREATE POLICY "Service role manages idempotency keys" ON public.idempotency_keys
+  FOR ALL TO service_role
+  USING (true);
+
+-- 5.11 Order Events RLS (Admin full view, Customer view via token RPC or admin, Service Role full access)
+DROP POLICY IF EXISTS "Admins read order events" ON public.order_events;
+CREATE POLICY "Admins read order events" ON public.order_events
+  FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+DROP POLICY IF EXISTS "Admins insert order events" ON public.order_events;
+CREATE POLICY "Admins insert order events" ON public.order_events
+  FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Service role manages order events" ON public.order_events;
+CREATE POLICY "Service role manages order events" ON public.order_events
   FOR ALL TO service_role
   USING (true);
 
@@ -422,30 +588,391 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.submit_order_payment_proof(TEXT, UUID, TEXT, TEXT) TO anon, authenticated;
 
+-- 6.3 Atomic Inventory Reservation & Hold Functions
+-- 6.3.1 Create time-limited stock hold (15-min default) preventing concurrent checkout race conditions
+CREATE OR REPLACE FUNCTION public.create_inventory_hold(
+  p_store_id TEXT,
+  p_items JSONB,
+  p_order_id TEXT DEFAULT NULL,
+  p_duration_minutes INTEGER DEFAULT 15
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_item RECORD;
+  v_product_id TEXT;
+  v_requested_qty INT;
+  v_stock INT;
+  v_product_name TEXT;
+  v_active_holds INT;
+  v_available_qty INT;
+  v_hold_id UUID := uuid_generate_v4();
+  v_expires_at TIMESTAMPTZ := now() + (COALESCE(p_duration_minutes, 15) || ' minutes')::interval;
+BEGIN
+  -- 1. Expire stale holds past their deadline
+  UPDATE public.inventory_reservations
+  SET status = 'expired', updated_at = now()
+  WHERE status = 'active' AND expires_at <= now();
+
+  -- 2. Sort items by product_id to lock in deterministic order (prevents deadlocks)
+  FOR v_item IN
+    SELECT 
+      (elem->>'productId')::TEXT as product_id,
+      COALESCE((elem->>'quantity')::INT, 1) as quantity
+    FROM jsonb_array_elements(p_items) elem
+    ORDER BY (elem->>'productId')::TEXT ASC
+  LOOP
+    v_product_id := v_item.product_id;
+    v_requested_qty := v_item.quantity;
+
+    IF v_product_id IS NULL OR v_requested_qty <= 0 THEN
+      CONTINUE;
+    END IF;
+
+    -- Pessimistic row-level lock
+    SELECT stock, name INTO v_stock, v_product_name
+    FROM public.products
+    WHERE id = v_product_id AND store_id = p_store_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RETURN jsonb_build_object(
+        'success', false,
+        'error', 'PRODUCT_NOT_FOUND',
+        'message', 'Product with ID ' || v_product_id || ' does not exist.'
+      );
+    END IF;
+
+    -- Calculate active reservations for this product
+    SELECT COALESCE(SUM(quantity), 0) INTO v_active_holds
+    FROM public.inventory_reservations
+    WHERE product_id = v_product_id
+      AND status = 'active'
+      AND expires_at > now();
+
+    v_available_qty := v_stock - v_active_holds;
+
+    IF v_available_qty < v_requested_qty THEN
+      RETURN jsonb_build_object(
+        'success', false,
+        'error', 'INSUFFICIENT_STOCK',
+        'productId', v_product_id,
+        'productName', v_product_name,
+        'available', GREATEST(0, v_available_qty),
+        'requested', v_requested_qty,
+        'message', 'Only ' || GREATEST(0, v_available_qty) || ' unit(s) of "' || v_product_name || '" are currently available (others are currently in checkout).'
+      );
+    END IF;
+  END LOOP;
+
+  -- 3. If all items have sufficient available stock, create reservations
+  FOR v_item IN
+    SELECT 
+      (elem->>'productId')::TEXT as product_id,
+      COALESCE((elem->>'quantity')::INT, 1) as quantity
+    FROM jsonb_array_elements(p_items) elem
+  LOOP
+    IF v_item.product_id IS NOT NULL AND v_item.quantity > 0 THEN
+      INSERT INTO public.inventory_reservations (
+        hold_id,
+        store_id,
+        order_id,
+        product_id,
+        quantity,
+        status,
+        expires_at
+      ) VALUES (
+        v_hold_id,
+        p_store_id,
+        p_order_id,
+        v_item.product_id,
+        v_item.quantity,
+        'active',
+        v_expires_at
+      );
+    END IF;
+  END LOOP;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'holdId', v_hold_id,
+    'expiresAt', v_expires_at
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.create_inventory_hold(TEXT, JSONB, TEXT, INTEGER) TO anon, authenticated, service_role;
+
+-- 6.3.2 Release inventory hold (called when checkout cancelled or timed out)
+CREATE OR REPLACE FUNCTION public.release_inventory_hold(
+  p_hold_id UUID DEFAULT NULL,
+  p_order_id TEXT DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_count INT;
+BEGIN
+  IF p_hold_id IS NULL AND p_order_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'message', 'Hold ID or Order ID must be provided.');
+  END IF;
+
+  UPDATE public.inventory_reservations
+  SET status = 'released', updated_at = now()
+  WHERE status = 'active'
+    AND (
+      (p_hold_id IS NOT NULL AND hold_id = p_hold_id)
+      OR
+      (p_order_id IS NOT NULL AND order_id = p_order_id)
+    );
+
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'releasedCount', v_count
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.release_inventory_hold(UUID, TEXT) TO anon, authenticated, service_role;
+
+-- 6.3.3 Consume inventory hold (called when order is confirmed / paid to permanently decrement stock)
+CREATE OR REPLACE FUNCTION public.consume_inventory_hold(
+  p_hold_id UUID DEFAULT NULL,
+  p_order_id TEXT DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_res RECORD;
+  v_count INT := 0;
+BEGIN
+  IF p_hold_id IS NULL AND p_order_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'message', 'Hold ID or Order ID must be provided.');
+  END IF;
+
+  FOR v_res IN
+    SELECT id, product_id, quantity
+    FROM public.inventory_reservations
+    WHERE status = 'active'
+      AND (
+        (p_hold_id IS NOT NULL AND hold_id = p_hold_id)
+        OR
+        (p_order_id IS NOT NULL AND order_id = p_order_id)
+      )
+    FOR UPDATE
+  LOOP
+    -- Deduct physical stock
+    UPDATE public.products
+    SET stock = GREATEST(0, stock - v_res.quantity),
+        updated_at = now()
+    WHERE id = v_res.product_id;
+
+    -- Mark reservation consumed
+    UPDATE public.inventory_reservations
+    SET status = 'consumed',
+        updated_at = now()
+    WHERE id = v_res.id;
+
+    v_count := v_count + 1;
+  END LOOP;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'consumedCount', v_count
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.consume_inventory_hold(UUID, TEXT) TO anon, authenticated, service_role;
+
+-- 6.3.4 Helper: Get available stock (physical stock minus active reservations)
+CREATE OR REPLACE FUNCTION public.get_product_available_stock(
+  p_product_id TEXT
+)
+RETURNS integer
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT GREATEST(0, p.stock - COALESCE(
+    (SELECT SUM(r.quantity)
+     FROM public.inventory_reservations r
+     WHERE r.product_id = p.id
+       AND r.status = 'active'
+       AND r.expires_at > now()
+    ), 0)::INT
+  )
+  FROM public.products p
+  WHERE p.id = p_product_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_product_available_stock(TEXT) TO anon, authenticated;
+
+-- 6.4 Order Audit Trail (Events) Functions
+-- 6.4.1 Append an audit event to an order
+CREATE OR REPLACE FUNCTION public.log_order_event(
+  p_order_id TEXT,
+  p_store_id TEXT,
+  p_event_type TEXT,
+  p_from_status TEXT DEFAULT NULL,
+  p_to_status TEXT DEFAULT NULL,
+  p_actor_type TEXT DEFAULT 'system',
+  p_actor_id TEXT DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL,
+  p_metadata JSONB DEFAULT '{}'::jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_event_id UUID := uuid_generate_v4();
+BEGIN
+  INSERT INTO public.order_events (
+    id,
+    order_id,
+    store_id,
+    event_type,
+    from_status,
+    to_status,
+    actor_type,
+    actor_id,
+    notes,
+    metadata,
+    created_at
+  ) VALUES (
+    v_event_id,
+    p_order_id,
+    p_store_id,
+    p_event_type,
+    p_from_status,
+    p_to_status,
+    COALESCE(p_actor_type, 'system'),
+    p_actor_id,
+    p_notes,
+    COALESCE(p_metadata, '{}'::jsonb),
+    now()
+  );
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'eventId', v_event_id
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.log_order_event(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated, service_role;
+
+-- 6.4.2 Fetch order event audit trail (Admin or Customer with valid token)
+CREATE OR REPLACE FUNCTION public.get_order_events(
+  p_order_id TEXT,
+  p_access_token UUID DEFAULT NULL
+)
+RETURNS TABLE (
+  id UUID,
+  order_id TEXT,
+  store_id TEXT,
+  event_type TEXT,
+  from_status TEXT,
+  to_status TEXT,
+  actor_type TEXT,
+  actor_id TEXT,
+  notes TEXT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- Allow if admin OR if correct access token matches order
+  IF public.is_admin() OR EXISTS (
+    SELECT 1 FROM public.orders
+    WHERE orders.id = p_order_id AND orders.access_token = p_access_token
+  ) THEN
+    RETURN QUERY
+    SELECT 
+      e.id,
+      e.order_id,
+      e.store_id,
+      e.event_type,
+      e.from_status,
+      e.to_status,
+      e.actor_type,
+      e.actor_id,
+      e.notes,
+      e.metadata,
+      e.created_at
+    FROM public.order_events e
+    WHERE e.order_id = p_order_id
+    ORDER BY e.created_at ASC;
+  ELSE
+    RAISE EXCEPTION 'Unauthorized to view events for order %', p_order_id;
+  END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_order_events(TEXT, UUID) TO anon, authenticated, service_role;
+
 -- ============================================================================
--- 7. SUPABASE STORAGE BUCKETS & POLICIES
+-- 7. SUPABASE STORAGE BUCKETS & POLICIES (Hardened with Size & Type Limits)
 -- ============================================================================
 
--- Create storage buckets if they do not exist
-INSERT INTO storage.buckets (id, name, public)
+-- Create storage buckets if they do not exist with size limits (5MB for assets, 10MB for receipts)
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES 
-  ('product-images', 'product-images', true),
-  ('payment-receipts', 'payment-receipts', false)
-ON CONFLICT (id) DO UPDATE SET public = EXCLUDED.public;
+  (
+    'product-images',
+    'product-images',
+    true,
+    5242880, -- 5MB limit
+    ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']
+  ),
+  (
+    'store-assets',
+    'store-assets',
+    true,
+    5242880, -- 5MB limit
+    ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']
+  ),
+  (
+    'payment-receipts',
+    'payment-receipts',
+    false,
+    10485760, -- 10MB limit
+    ARRAY['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+  )
+ON CONFLICT (id) DO UPDATE SET 
+  public = EXCLUDED.public,
+  file_size_limit = EXCLUDED.file_size_limit,
+  allowed_mime_types = EXCLUDED.allowed_mime_types;
 
--- 7.1 Product Images Storage Policies
--- Public can read all product images
+-- 7.1 Product Images & Store Assets Storage Policies
+-- Public can read all product images and store assets
 DROP POLICY IF EXISTS "Product images are publicly accessible" ON storage.objects;
 CREATE POLICY "Product images are publicly accessible" ON storage.objects
   FOR SELECT TO anon, authenticated
-  USING (bucket_id = 'product-images');
+  USING (bucket_id IN ('product-images', 'store-assets'));
 
--- Admins can upload, update, and delete product images
+-- Admins can upload, update, and delete product images and store assets
 DROP POLICY IF EXISTS "Admins can manage product images" ON storage.objects;
 CREATE POLICY "Admins can manage product images" ON storage.objects
   FOR ALL TO authenticated
-  USING (bucket_id = 'product-images' AND public.is_admin())
-  WITH CHECK (bucket_id = 'product-images' AND public.is_admin());
+  USING (bucket_id IN ('product-images', 'store-assets') AND public.is_admin())
+  WITH CHECK (bucket_id IN ('product-images', 'store-assets') AND public.is_admin());
 
 -- 7.2 Payment Receipts Storage Policies
 -- Admins can view uploaded payment receipts
@@ -454,7 +981,7 @@ CREATE POLICY "Admins can view payment receipts" ON storage.objects
   FOR SELECT TO authenticated
   USING (bucket_id = 'payment-receipts' AND public.is_admin());
 
--- Customers/Guests can upload payment receipts
+-- Customers/Guests can upload payment receipts (constrained by bucket mime type & size limit)
 DROP POLICY IF EXISTS "Anyone can upload payment receipts" ON storage.objects;
 CREATE POLICY "Anyone can upload payment receipts" ON storage.objects
   FOR INSERT TO anon, authenticated

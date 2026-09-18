@@ -14,10 +14,12 @@ import {
   MapPin,
   X,
   FileText,
+  History,
+  ShieldCheck,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
-import { Order, OrderStatus, PaymentStatus } from '../../types/store';
-import { updateOrderStatus, updatePaymentStatus } from '../../services/store/storeService';
+import { Order, OrderStatus, PaymentStatus, OrderEvent } from '../../types/store';
+import { updateOrderStatus, updatePaymentStatus, getOrderEvents } from '../../services/store/storeService';
 
 export const OrdersManager: React.FC = () => {
   const { orders, storeId, formatPrice, themeColors } = useStore();
@@ -26,6 +28,21 @@ export const OrdersManager: React.FC = () => {
   const [paymentFilter, setPaymentFilter] = useState<string>('all');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [viewingProof, setViewingProof] = useState<string | null>(null);
+  const [orderEvents, setOrderEvents] = useState<OrderEvent[]>([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+
+  // Load audit trail whenever selectedOrder changes
+  React.useEffect(() => {
+    if (selectedOrder) {
+      setLoadingEvents(true);
+      getOrderEvents(selectedOrder.id)
+        .then(events => setOrderEvents(events))
+        .catch(err => console.warn('Failed to load order events:', err))
+        .finally(() => setLoadingEvents(false));
+    } else {
+      setOrderEvents([]);
+    }
+  }, [selectedOrder?.id]);
 
   const filteredOrders = orders.filter(o => {
     const matchesSearch =
@@ -42,6 +59,8 @@ export const OrdersManager: React.FC = () => {
     await updateOrderStatus(storeId, orderId, status);
     if (selectedOrder && selectedOrder.id === orderId) {
       setSelectedOrder({ ...selectedOrder, orderStatus: status });
+      const events = await getOrderEvents(orderId);
+      setOrderEvents(events);
     }
   };
 
@@ -49,6 +68,8 @@ export const OrdersManager: React.FC = () => {
     await updatePaymentStatus(storeId, orderId, status);
     if (selectedOrder && selectedOrder.id === orderId) {
       setSelectedOrder({ ...selectedOrder, paymentStatus: status });
+      const events = await getOrderEvents(orderId);
+      setOrderEvents(events);
     }
   };
 
@@ -386,6 +407,70 @@ export const OrdersManager: React.FC = () => {
                     <span style={{ color: themeColors.primary }}>{formatPrice(selectedOrder.total)}</span>
                   </div>
                 </div>
+              </div>
+
+              {/* Order Lifecycle Audit Trail */}
+              <div className="p-4 rounded-xl border space-y-3" style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}>
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold flex items-center gap-1.5" style={{ color: themeColors.text }}>
+                    <History className="w-4 h-4 text-emerald-600" />
+                    <span>Audit Trail &amp; Lifecycle Events</span>
+                  </h4>
+                  <span className="text-[11px] px-2 py-0.5 rounded-md font-mono bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
+                    {orderEvents.length} {orderEvents.length === 1 ? 'event' : 'events'}
+                  </span>
+                </div>
+
+                {loadingEvents ? (
+                  <div className="py-4 text-center text-neutral-400 text-xs">
+                    Loading lifecycle history...
+                  </div>
+                ) : orderEvents.length === 0 ? (
+                  <div className="py-3 text-center text-neutral-400 text-xs italic">
+                    No explicit state transition events recorded yet for this order.
+                  </div>
+                ) : (
+                  <div className="relative pl-5 border-l-2 space-y-3" style={{ borderColor: themeColors.border }}>
+                    {orderEvents.map((evt) => (
+                      <div key={evt.id} className="relative group">
+                        {/* Dot indicator */}
+                        <div
+                          className="absolute -left-[27px] top-1 w-3 h-3 rounded-full border-2 bg-white dark:bg-neutral-900"
+                          style={{ borderColor: evt.eventType.includes('paid') ? '#10b981' : themeColors.primary }}
+                        />
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="font-bold capitalize text-xs" style={{ color: themeColors.text }}>
+                            {evt.eventType.replace(/_/g, ' ')}
+                          </span>
+                          <span className="text-[10px] text-neutral-400 font-mono">
+                            {new Date(evt.createdAt).toLocaleString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                        {evt.notes && (
+                          <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                            {evt.notes}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 mt-1 text-[10px] text-neutral-400">
+                          <span className="uppercase px-1.5 py-0.2 rounded bg-neutral-200 dark:bg-neutral-800 font-semibold text-[9px]">
+                            Actor: {evt.actorType}
+                          </span>
+                          {evt.fromStatus && evt.toStatus && (
+                            <span>
+                              {evt.fromStatus} &rarr; <strong className="text-neutral-700 dark:text-neutral-300">{evt.toStatus}</strong>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

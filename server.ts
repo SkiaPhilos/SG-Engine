@@ -98,6 +98,21 @@ async function startServer() {
       (req.headers['X-SFPY-TIMESTAMP'] as string) ||
       '';
 
+    const eventIdHeader =
+      (req.headers['x-sfpy-event-id'] as string) ||
+      (req.headers['X-SFPY-EVENT-ID'] as string) ||
+      '';
+
+    const eventTypeHeader =
+      (req.headers['x-sfpy-event-type'] as string) ||
+      (req.headers['X-SFPY-EVENT-TYPE'] as string) ||
+      '';
+
+    const aggregatorIdHeader =
+      (req.headers['x-sfpy-aggregator-id'] as string) ||
+      (req.headers['X-SFPY-AGGREGATOR-ID'] as string) ||
+      '';
+
     const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : (req.body || '');
 
     // 1. Fetch credentials
@@ -129,10 +144,14 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid JSON payload' });
     }
 
-    // 4. Process verified webhook & reconcile order
+    // 4. Process verified webhook & reconcile order (supports Webhooks v2 & v1)
     try {
-      const result = await processVerifiedWebhook(storeId, payload);
-      res.json({ received: true, handled: result.handled, orderId: result.orderId });
+      const result = await processVerifiedWebhook(storeId, payload, {
+        eventId: eventIdHeader,
+        eventType: eventTypeHeader,
+        aggregatorId: aggregatorIdHeader,
+      });
+      res.json({ received: true, handled: result.handled, orderId: result.orderId, duplicate: result.duplicate });
     } catch (err: any) {
       console.error('Error processing verified webhook:', err);
       res.status(500).json({ error: 'Internal processing error' });

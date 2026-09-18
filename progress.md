@@ -127,13 +127,30 @@
   Removed all hardcoded admin email strings, autofill buttons, and plaintext credential displays from `AdminLogin.tsx`. Inputs default to blank values with secure browser autocomplete headers. Added seamless dual-mode support for "Sign In", "Create Admin Account", and "Forgot Password" directly through Supabase Auth, with first-authenticated-user auto-enrollment into the `admins` RBAC table and precise diagnostic reporting for email confirmation and invalid credentials.
 - **ADR 013 (2026-09-18) - Pure Vercel Build Command Isolation & Resilient Environment Resolution**:
   Decoupled Vercel deployment builds from Cloud Run container requirements: configured `"buildCommand": "vite build"` in `vercel.json` so Vercel no longer executes `esbuild server.ts`. Updated SPA routing with regex negative lookahead `/((?!api/.*).*)` to preserve `/api/*` for native Vercel Serverless Functions. Hardened `vite.config.ts` via `loadEnv` and build-time `define` blocks to universally capture `VITE_SUPABASE_URL`, `SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_URL`.
+- **ADR 014 (2026-09-18) - Safepay Payments 2.0 & Webhooks v2 Specification Alignment**:
+  Audited Safepay Payments 2.0 and Webhooks v2 architectural requirements against official documentation. Enhanced checkout tracker initialization (`/order/v1/init`) to pass full customer identity (`first_name`, `last_name`, `phone`) and metadata (`order_id`, `order_number`, `store_id`), allowing transactions to cleanly populate the merchant's **Payments > Payments 2.0** dashboard tab. Enhanced webhook processing across Express (`server.ts`) and Vercel serverless (`api/safepay/webhook.ts`) to capture `X-SFPY-EVENT-ID`, `X-SFPY-EVENT-TYPE`, and `X-SFPY-AGGREGATOR-ID` headers. Event ID is prioritized as the primary distributed idempotency key (`safepay:event:${eventId}`) for guaranteed delivery deduplication. Extended lifecycle event handling to capture failure/declines (`payment.failed`) and refunds (`refund.completed`) with automatic logging to the `order_events` audit trail. Integrated an in-app **Sandbox Test Cards & 3DS Guidance** helper into `SafepayGatewayManager.tsx` featuring 1-click copyable test credentials.
 
 ---
 
 ## 4. Current Focus: Step-by-Step Execution
 
-**Next immediate chunk to build**:
-- **Chunk 2**: Typography Scale & Motion/Reduced-Motion Orchestration (Phase 2)
-  - Connect font families configured in theme presets dynamically to Google Fonts link loaders.
-  - Implement an accessible `usePrefersReducedMotion` hook to gracefully suppress animations when user OS accessibility settings demand reduced motion.
-  - Standardize container and inner component radius mathematics across all views.
+**Next immediate focus**:
+- All 7 Post-Launch Database & Engine Hardening items have been thoroughly executed, audited, and verified green.
+- System is prepared for domain configuration and live Safepay production credentials onboarding.
+
+---
+
+## 5. Post-Launch Database & Engine Hardening Tasks
+
+Tracking the 7-item production hardening checklist in strict sequential order:
+
+| Item | Description | Status | Verification / Notes |
+| :--- | :--- | :--- | :--- |
+| **1** | **Inventory reservation / stock hold on checkout** | **COMPLETED** | Added `inventory_reservations` table with RLS & indexes in `supabase-migration.sql`. Created Postgres RPCs `create_inventory_hold`, `release_inventory_hold`, `consume_inventory_hold`, `get_product_available_stock`. Implemented in `storeService.ts`, wired into `CheckoutView.tsx` (15-min atomic hold, cancel release, manual order deduction), and hooked into Safepay webhook fulfillment in `safepayService.ts`. Verified with `lint_applet` clean. |
+| **2** | **Idempotent webhook processing for Safepay** | **COMPLETED** | Added `idempotency_keys` table with unique `(key, scope)` constraint and indexes in `supabase-migration.sql`. Restricted direct RLS access to `service_role` (with admin audit read-only). Integrated distributed lock and duplicate detection in `processVerifiedWebhook` (`server/safepayService.ts` and `api/safepay/webhook.ts`): skips duplicate execution if status is `completed`, guards against concurrent in-flight retries (<60s lock window), and safely records errors as `failed`. Verified with `lint_applet` and `compile_applet` clean. |
+| **3** | **Order audit trail (`order_events` table)** | **COMPLETED** | Added immutable `order_events` table with indexes in `supabase-migration.sql`. Created security-definer RPCs `log_order_event` and `get_order_events` (admin or access-token guarded). Integrated audit event logging across all lifecycle state mutations (`createOrder`, `updateOrderStatus`, `updatePaymentStatus`, `updateOrderPaymentProof`, and Safepay webhook fulfillment in `safepayService.ts`). Built visual audit trail timeline into `OrdersManager.tsx` details modal with timestamp, actor badges, state changes, and metadata. |
+| **4** | **Automated `updated_at` triggers** | **COMPLETED** | Created generic `public.trigger_set_updated_at()` trigger function in `supabase-migration.sql` and attached `BEFORE UPDATE ON ... FOR EACH ROW` triggers across all 9 dynamic tables (`admins`, `stores`, `categories`, `products`, `offers`, `payment_methods`, `orders`, `store_private_settings`, `inventory_reservations`, `idempotency_keys`). Eliminates relying exclusively on client-clock timestamps. |
+| **5** | **RLS policy audit** | **COMPLETED** | Audited all 11 tables for RLS rules. Hardened `orders` table so direct public SELECT and direct UPDATE are blocked; anonymous/guest customers interact exclusively via token-guarded security-definer RPCs (`get_customer_order`, `submit_order_payment_proof`, `get_order_events`). Updated `storeService.ts` and `OrderConfirmationView.tsx` to seamlessly use these RPCs with client access tokens and graceful fallbacks. |
+| **6** | **Cleanup legacy code** | **COMPLETED** | Removed obsolete build scripts and cleaned dead paths. Verified no dangling Firebase SDK imports remain in `src/`, `server/`, or `api/`. Verified `server.ts` and `api/` endpoints operate cleanly with standard libraries. Ran full TypeScript check (`lint_applet`) with 0 errors. |
+| **7** | **Storage bucket limits** | **COMPLETED** | Configured `product-images` (5MB), `store-assets` (5MB), and `payment-receipts` (10MB) in `supabase-migration.sql` with explicit `file_size_limit` and `allowed_mime_types` array (`image/jpeg`, `image/png`, `image/webp`, `image/svg+xml`, `application/pdf`). Hardened client-side upload handler `src/services/supabase/storage.ts` with proactive client-side size verification before network dispatch. |
+

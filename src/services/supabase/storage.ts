@@ -15,7 +15,7 @@ export interface StorageUploadResult {
  * @param pathSuffix Optional custom filename or path suffix
  */
 export async function uploadToStorage(
-  bucket: 'store-assets' | 'payment-receipts',
+  bucket: 'store-assets' | 'product-images' | 'payment-receipts',
   file: File | Blob | string,
   pathSuffix?: string
 ): Promise<string> {
@@ -23,6 +23,13 @@ export async function uploadToStorage(
   if (typeof file === 'string' && (file.startsWith('http://') || file.startsWith('https://'))) {
     return file;
   }
+
+  // Bucket size limits (bytes)
+  const MAX_LIMITS: Record<string, number> = {
+    'product-images': 5 * 1024 * 1024, // 5MB
+    'store-assets': 5 * 1024 * 1024,   // 5MB
+    'payment-receipts': 10 * 1024 * 1024, // 10MB
+  };
 
   if (!isSupabaseConfigured()) {
     // Return base64 directly as fallback
@@ -45,6 +52,7 @@ export async function uploadToStorage(
 
   let body: Blob | File | Uint8Array;
   let contentType = 'image/jpeg';
+  let fileSize = 0;
 
   if (typeof file === 'string') {
     // Parse data URL to blob
@@ -53,6 +61,7 @@ export async function uploadToStorage(
       const mimeMatch = parts[0].match(/:(.*?);/);
       if (mimeMatch) contentType = mimeMatch[1];
       const binary = atob(parts[1]);
+      fileSize = binary.length;
       const array = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         array[i] = binary.charCodeAt(i);
@@ -64,6 +73,14 @@ export async function uploadToStorage(
   } else {
     body = file;
     contentType = file.type || 'image/jpeg';
+    fileSize = file.size;
+  }
+
+  const maxAllowed = MAX_LIMITS[bucket] || 5 * 1024 * 1024;
+  if (fileSize > maxAllowed) {
+    throw new Error(
+      `File size (${(fileSize / (1024 * 1024)).toFixed(2)}MB) exceeds the bucket limit of ${(maxAllowed / (1024 * 1024)).toFixed(0)}MB.`
+    );
   }
 
   try {

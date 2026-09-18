@@ -398,16 +398,36 @@ export async function initSafepayTracker(params: {
   // Amount in smallest unit (paisas for PKR)
   const amountInPaisas = Math.round(order.total * 100);
 
-  // 3. Step A: Initialize order tracker on Safepay
+  // 3. Step A: Initialize order tracker on Safepay with Payments 2.0 metadata and customer attributes
+  const nameParts = (order.customer?.name || '').trim().split(/\s+/);
+  const firstName = nameParts[0] || 'Customer';
+  const lastName = nameParts.slice(1).join(' ') || '';
+
+  const initBody: Record<string, any> = {
+    client: creds.apiKey,
+    amount: amountInPaisas,
+    currency: 'PKR',
+    environment: creds.environment,
+    metadata: {
+      order_id: orderId,
+      order_number: order.orderNumber,
+      store_id: storeId,
+      source: 'store-engine',
+    },
+  };
+
+  if (order.customer?.phone) {
+    initBody.customer = {
+      first_name: firstName,
+      last_name: lastName,
+      phone: order.customer.phone,
+    };
+  }
+
   const initRes = await fetch(`${baseUrl}/order/v1/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client: creds.apiKey,
-      amount: amountInPaisas,
-      currency: 'PKR',
-      environment: creds.environment,
-    }),
+    body: JSON.stringify(initBody),
   });
 
   if (!initRes.ok) {
@@ -532,27 +552,124 @@ export function verifyWebhookSignature(params: {
   return { isValid: true };
 }
 
+export interface SafepayWebhookOptions {
+  eventId?: string;
+  eventType?: string;
+  aggregatorId?: string;
+}
+
 /**
- * Processes a verified Safepay webhook:
- * Reconciles order payment status, updates database safely.
+ * Processes a verified Safepay webhook (supports Webhooks v2 and legacy notifications):
+ * Reconciles order payment status, handles success, decline/failure, and refunds safely.
  */
-export async function processVerifiedWebhook(storeId: string, payload: any): Promise<{ handled: boolean; orderId?: string }> {
+export async function processVerifiedWebhook(
+  storeId: string,
+  payload: any,
+  options?: SafepayWebhookOptions
+): Promise<{ handled: boolean; orderId?: string; duplicate?: boolean }> {
+  // Extract Webhooks v2 event metadata or fallback to payload properties
+  const eventId = options?.eventId || payload.id || payload.data?.id;
+  const rawEventType = options?.eventType || payload.type || payload.event || '';
+  const eventType = String(rawEventType).toLowerCase();
+
   // Safepay payloads may put notification inside data.notification or top-level notification/data
   const notification = payload.data?.notification || payload.notification || payload.data || payload;
-  const state = notification.state || payload.state || '';
-  const tracker = notification.tracker || payload.tracker || payload.token;
-  const orderIdFromPayload = notification.order_id || payload.order_id || payload.metadata?.order_id;
+  const state = String(notification.state || payload.state || '').toUpperCase();
+  const tracker = notification.tracker || payload.tracker || payload.token || payload.data?.token;
+  const orderIdFromPayload =
+    notification.order_id ||
+    payload.order_id ||
+    payload.metadata?.order_id ||
+    payload.data?.metadata?.order_id;
 
-  // We consider payment successful if state is 'PAID' or 'payment.succeeded' or 'TRACKER_ENDED'
+  // Event category detection
   const isPaid =
     state === 'PAID' ||
     state === 'TRACKER_ENDED' ||
-    payload.event === 'payment.succeeded' ||
+    eventType === 'payment.succeeded' ||
+    eventType === 'payment.settled' ||
     payload.success === true;
 
-  if (!isPaid) {
-    console.log(`Safepay webhook received non-terminal/non-paid state: ${state}`);
+  const isFailed =
+    state === 'FAILED' ||
+    eventType === 'payment.failed' ||
+    eventType === 'payment.canceled';
+
+  const isRefund =
+    eventType === 'refund.completed' ||
+    eventType === 'refund.created';
+
+  if (!isPaid && !isFailed && !isRefund) {
+    console.log(`Safepay webhook received non-terminal event: ${eventType || state}`);
     return { handled: false };
+  }
+
+  // Determine unique idempotency key for this payment delivery.
+  // Prioritize Safepay Webhooks v2 event ID if present (e.g. evt_...).
+  const eventKey = eventId
+    ? `safepay:event:${eventId}`
+    : tracker
+    ? `safepay:tracker:${tracker}:${eventType || state}`
+    : (orderIdFromPayload ? `safepay:order:${orderIdFromPayload}:${eventType || state}` : null);
+
+  const adminSb = getAdminSupabase();
+  let idempotencyId: string | null = null;
+
+  // 1. Idempotency Guard Check
+  if (eventKey) {
+    try {
+      const { data: existing } = await adminSb
+        .from('idempotency_keys')
+        .select('id, response_status, order_id, locked_at')
+        .eq('key', eventKey)
+        .eq('scope', 'safepay_webhook')
+        .maybeSingle();
+
+      if (existing) {
+        if (existing.response_status === 'completed') {
+          console.log(`[Idempotency] Webhook event ${eventKey} already completed for order ${existing.order_id}. Skipping duplicate fulfillment.`);
+          return { handled: true, orderId: existing.order_id, duplicate: true };
+        }
+
+        // If 'processing' lock was acquired recently (< 60s), avoid concurrent duplicate execution
+        const lockedAt = existing.locked_at ? new Date(existing.locked_at).getTime() : 0;
+        const ageMs = Date.now() - lockedAt;
+        if (existing.response_status === 'processing' && ageMs < 60_000) {
+          console.log(`[Idempotency] Webhook event ${eventKey} is currently processing (${ageMs}ms ago). Ignoring duplicate delivery.`);
+          return { handled: true, orderId: existing.order_id, duplicate: true };
+        }
+
+        // Lock expired or failed: take over lock
+        idempotencyId = existing.id;
+        await adminSb
+          .from('idempotency_keys')
+          .update({
+            response_status: 'processing',
+            locked_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            request_payload: payload,
+          })
+          .eq('id', existing.id);
+      } else {
+        const { data: inserted } = await adminSb
+          .from('idempotency_keys')
+          .insert({
+            key: eventKey,
+            scope: 'safepay_webhook',
+            response_status: 'processing',
+            locked_at: new Date().toISOString(),
+            request_payload: payload,
+          })
+          .select('id')
+          .maybeSingle();
+
+        if (inserted) {
+          idempotencyId = inserted.id;
+        }
+      }
+    } catch (idempErr) {
+      console.warn('[Idempotency] Note: Check on idempotency table skipped or errored:', idempErr);
+    }
   }
 
   let targetOrderId = orderIdFromPayload;
@@ -566,20 +683,160 @@ export async function processVerifiedWebhook(storeId: string, payload: any): Pro
   }
 
   if (!targetOrderId) {
-    console.warn('Unable to locate matching order for Safepay webhook:', { tracker, orderIdFromPayload });
+    console.warn('Unable to locate matching order for Safepay webhook:', { tracker, orderIdFromPayload, eventId, eventType });
+    if (idempotencyId) {
+      await adminSb.from('idempotency_keys').update({ response_status: 'failed', updated_at: new Date().toISOString() }).eq('id', idempotencyId);
+    }
     return { handled: false };
   }
 
-  // Update order status to paid
-  await updateOrder(storeId, targetOrderId, {
-    paymentStatus: 'paid',
-    orderStatus: 'confirmed',
-    safepaySignatureVerified: true,
-    safepayPaidAt: new Date().toISOString(),
-  });
+  // Handle Payment Failure / Card Decline
+  if (isFailed) {
+    try {
+      await adminSb.rpc('log_order_event', {
+        p_order_id: targetOrderId,
+        p_store_id: storeId,
+        p_event_type: 'safepay_payment_failed',
+        p_from_status: 'pending_verification',
+        p_to_status: 'failed',
+        p_actor_type: 'system',
+        p_actor_id: 'safepay_webhook_v2',
+        p_notes: `Safepay payment attempt failed or was declined (Event: ${eventType || 'payment.failed'}, State: ${state || 'FAILED'})`,
+        p_metadata: {
+          tracker: tracker || null,
+          eventId: eventId || null,
+          eventType: eventType || null,
+          reason: notification.reason || payload.reason || payload.error || null,
+        },
+      });
 
-  console.log(`Order ${targetOrderId} successfully marked as PAID via verified Safepay webhook.`);
-  return { handled: true, orderId: targetOrderId };
+      if (idempotencyId) {
+        await adminSb.from('idempotency_keys').update({
+          response_status: 'completed',
+          order_id: targetOrderId,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('id', idempotencyId);
+      }
+
+      console.log(`Recorded Safepay payment failure in audit trail for order ${targetOrderId}.`);
+      return { handled: true, orderId: targetOrderId, duplicate: false };
+    } catch (failErr) {
+      console.error(`Error logging Safepay payment failure for order ${targetOrderId}:`, failErr);
+      return { handled: false, orderId: targetOrderId };
+    }
+  }
+
+  // Handle Refund Event
+  if (isRefund) {
+    try {
+      await updateOrder(storeId, targetOrderId, {
+        paymentStatus: 'refunded',
+      });
+
+      await adminSb.rpc('log_order_event', {
+        p_order_id: targetOrderId,
+        p_store_id: storeId,
+        p_event_type: 'payment_refunded',
+        p_from_status: 'paid',
+        p_to_status: 'refunded',
+        p_actor_type: 'system',
+        p_actor_id: 'safepay_webhook_v2',
+        p_notes: `Safepay refund recorded (Event: ${eventType})`,
+        p_metadata: {
+          tracker: tracker || null,
+          eventId: eventId || null,
+          amount: payload.data?.amount || notification.amount || null,
+        },
+      });
+
+      if (idempotencyId) {
+        await adminSb.from('idempotency_keys').update({
+          response_status: 'completed',
+          order_id: targetOrderId,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('id', idempotencyId);
+      }
+
+      return { handled: true, orderId: targetOrderId, duplicate: false };
+    } catch (refErr) {
+      console.error(`Error recording refund for order ${targetOrderId}:`, refErr);
+      return { handled: false, orderId: targetOrderId };
+    }
+  }
+
+  // Handle Payment Succeeded
+  try {
+    // 2. Update order status to paid
+    await updateOrder(storeId, targetOrderId, {
+      paymentStatus: 'paid',
+      orderStatus: 'confirmed',
+      safepaySignatureVerified: true,
+      safepayPaidAt: new Date().toISOString(),
+    });
+
+    // 3. Atomically consume any active inventory reservation hold and decrement physical stock
+    try {
+      await adminSb.rpc('consume_inventory_hold', {
+        p_hold_id: null,
+        p_order_id: targetOrderId,
+      });
+    } catch (holdErr) {
+      console.warn(`Note: consume_inventory_hold non-critical warning for order ${targetOrderId}:`, holdErr);
+    }
+
+    // 4. Log immutable audit trail event
+    try {
+      await adminSb.rpc('log_order_event', {
+        p_order_id: targetOrderId,
+        p_store_id: storeId,
+        p_event_type: 'safepay_webhook_paid',
+        p_from_status: 'pending_verification',
+        p_to_status: 'paid',
+        p_actor_type: 'system',
+        p_actor_id: 'safepay_webhook_v2',
+        p_notes: 'Safepay Webhooks v2 HMAC signature verified and payment reconciled',
+        p_metadata: {
+          tracker,
+          state,
+          eventId,
+          eventType,
+          idempotencyKey: eventKey,
+        },
+      });
+    } catch (evtErr) {
+      console.warn('safepayService audit log non-critical warning:', evtErr);
+    }
+
+    // 5. Mark idempotency key as successfully completed
+    if (idempotencyId) {
+      await adminSb
+        .from('idempotency_keys')
+        .update({
+          response_status: 'completed',
+          order_id: targetOrderId,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', idempotencyId);
+    }
+
+    console.log(`Order ${targetOrderId} successfully marked as PAID via verified Safepay webhook.`);
+    return { handled: true, orderId: targetOrderId, duplicate: false };
+  } catch (err) {
+    console.error(`Failed executing fulfillment for order ${targetOrderId}:`, err);
+    if (idempotencyId) {
+      await adminSb
+        .from('idempotency_keys')
+        .update({
+          response_status: 'failed',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', idempotencyId);
+    }
+    throw err;
+  }
 }
 
 /**

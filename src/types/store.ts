@@ -173,8 +173,43 @@ export interface Order {
   safepayTracker?: string;
   safepaySignatureVerified?: boolean;
   safepayPaidAt?: string;
+  inventoryHoldId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type OrderEventType =
+  | 'order_created'
+  | 'status_changed'
+  | 'payment_status_changed'
+  | 'payment_proof_submitted'
+  | 'safepay_webhook_paid'
+  | 'admin_note_added';
+
+export interface OrderEvent {
+  id: string;
+  orderId: string;
+  storeId: string;
+  eventType: OrderEventType | string;
+  fromStatus?: string | null;
+  toStatus?: string | null;
+  actorType: 'admin' | 'system' | 'customer';
+  actorId?: string | null;
+  notes?: string | null;
+  metadata?: Record<string, any>;
+  createdAt: string;
+}
+
+export interface InventoryHoldResult {
+  success: boolean;
+  holdId?: string;
+  expiresAt?: string;
+  error?: string;
+  message?: string;
+  productId?: string;
+  productName?: string;
+  available?: number;
+  requested?: number;
 }
 
 export interface SafepayGatewayConfig {

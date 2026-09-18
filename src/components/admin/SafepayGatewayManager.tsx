@@ -17,6 +17,7 @@ import {
   Lock,
   Server,
   RefreshCw,
+  CreditCard,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import {
@@ -36,6 +37,13 @@ export const SafepayGatewayManager: React.FC = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
+  const [copiedItem, setCopiedItem] = useState<string | null>(null);
+
+  const handleCopyText = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedItem(id);
+    setTimeout(() => setCopiedItem(null), 2500);
+  };
 
   // Form State (write-only for secrets)
   const [enabled, setEnabled] = useState(false);
@@ -288,13 +296,16 @@ export const SafepayGatewayManager: React.FC = () => {
             </div>
           </div>
 
-          {/* Webhook Endpoint URL */}
-          <div className="p-4 rounded-xl border space-y-2" style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}>
+          {/* Webhook Endpoint URL & Webhooks v2 Details */}
+          <div className="p-4 rounded-xl border space-y-3" style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}>
             <div className="flex items-center justify-between">
-              <label className="text-xs font-bold flex items-center gap-1.5" style={{ color: themeColors.text }}>
+              <div className="flex items-center gap-2">
                 <Webhook className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Safepay Webhook Endpoint</span>
-              </label>
+                <span className="text-xs font-bold" style={{ color: themeColors.text }}>Safepay Webhook Endpoint</span>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                  Webhooks v2 & Payments 2.0
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={handleCopyWebhook}
@@ -309,10 +320,105 @@ export const SafepayGatewayManager: React.FC = () => {
             <p className="font-mono text-xs break-all py-1.5 px-2.5 rounded-lg bg-neutral-100 dark:bg-neutral-800" style={{ color: themeColors.text }}>
               {status?.webhookUrl || `${window.location.origin}/api/safepay/webhook`}
             </p>
-            <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Paste this URL into your Safepay Dashboard under Webhooks to receive verified payment confirmations.
-            </p>
+            <div className="space-y-1 text-[11px]" style={{ color: themeColors.muted }}>
+              <p>
+                Paste this URL into your Safepay Merchant Dashboard under <strong>Developer &gt; Webhooks</strong>.
+              </p>
+              <p className="leading-relaxed">
+                Transactions automatically appear in your Safepay Dashboard under <strong>Payments &gt; Payments 2.0</strong> with rich customer profiles and order metadata. Webhooks are cryptographically authenticated via HMAC-SHA256 (<code className="font-mono">X-SFPY-SIGNATURE</code>, <code className="font-mono">X-SFPY-TIMESTAMP</code>), with duplicate prevention powered by <code className="font-mono">X-SFPY-EVENT-ID</code>.
+              </p>
+            </div>
           </div>
+
+          {/* Sandbox Test Cards & 3DS Emulator Helper (Visible in Sandbox mode) */}
+          {environment === 'sandbox' && (
+            <div className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-indigo-500" />
+                  <span className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                    Safepay Sandbox Test Cards
+                  </span>
+                </div>
+                <a
+                  href="https://safepay-docs.netlify.app/developers/safepay/test-cards/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                >
+                  <span>Test Cards Docs</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+
+              <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                Use these official Safepay test credentials during sandbox checkout to test 3DS authentication and payment webhooks:
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                {/* Mastercard Success */}
+                <div className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider block">Mastercard (Success)</span>
+                    <span className="font-mono text-xs font-bold text-neutral-800 dark:text-neutral-200">5200 0000 0000 1096</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText('5200000000001096', 'mc')}
+                    className="p-1.5 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors"
+                    title="Copy Card Number"
+                  >
+                    {copiedItem === 'mc' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+
+                {/* Visa Success */}
+                <div className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider block">Visa (Success)</span>
+                    <span className="font-mono text-xs font-bold text-neutral-800 dark:text-neutral-200">4000 0000 0000 0002</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText('4000000000000002', 'visa')}
+                    className="p-1.5 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors"
+                    title="Copy Card Number"
+                  >
+                    {copiedItem === 'visa' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">Expiry:</span>
+                  <span className="font-mono font-bold text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">Any future (e.g. 12/28)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">CVV:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText('111', 'cvv')}
+                    className="font-mono font-bold text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded inline-flex items-center gap-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                  >
+                    <span>111</span>
+                    {copiedItem === 'cvv' ? <Check className="w-2.5 h-2.5 text-emerald-600" /> : <Copy className="w-2.5 h-2.5 text-neutral-400" />}
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">3DS OTP Emulator:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText('123456', 'otp')}
+                    className="font-mono font-bold text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded inline-flex items-center gap-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                  >
+                    <span>123456</span>
+                    {copiedItem === 'otp' ? <Check className="w-2.5 h-2.5 text-emerald-600" /> : <Copy className="w-2.5 h-2.5 text-neutral-400" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* API Key (Write-Only) */}
           <div className="space-y-1.5">

@@ -41,6 +41,21 @@ export default async function handler(req: any, res: any) {
     (req.headers?.['X-SFPY-TIMESTAMP'] as string) ||
     '';
 
+  const eventIdHeader =
+    (req.headers?.['x-sfpy-event-id'] as string) ||
+    (req.headers?.['X-SFPY-EVENT-ID'] as string) ||
+    '';
+
+  const eventTypeHeader =
+    (req.headers?.['x-sfpy-event-type'] as string) ||
+    (req.headers?.['X-SFPY-EVENT-TYPE'] as string) ||
+    '';
+
+  const aggregatorIdHeader =
+    (req.headers?.['x-sfpy-aggregator-id'] as string) ||
+    (req.headers?.['X-SFPY-AGGREGATOR-ID'] as string) ||
+    '';
+
   const rawBody = await getRawBody(req);
 
   // 1. Fetch credentials from encrypted database via Supabase
@@ -72,10 +87,19 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'Invalid JSON payload' });
   }
 
-  // 4. Process verified webhook & reconcile order in Supabase
+  // 4. Process verified webhook & reconcile order in Supabase (Webhooks v2 & v1 support)
   try {
-    const result = await processVerifiedWebhook(storeId, payload);
-    return res.status(200).json({ received: true, handled: result.handled, orderId: result.orderId });
+    const result = await processVerifiedWebhook(storeId, payload, {
+      eventId: eventIdHeader,
+      eventType: eventTypeHeader,
+      aggregatorId: aggregatorIdHeader,
+    });
+    return res.status(200).json({
+      received: true,
+      handled: result.handled,
+      orderId: result.orderId,
+      duplicate: Boolean(result.duplicate),
+    });
   } catch (err: any) {
     console.error('Error processing verified webhook:', err);
     return res.status(500).json({ error: 'Internal processing error' });

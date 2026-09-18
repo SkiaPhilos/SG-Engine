@@ -19,7 +19,12 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { PaymentMethod, CustomerDetails } from '../../types/store';
-import { createOrder } from '../../services/store/storeService';
+import {
+  createOrder,
+  createInventoryHold,
+  releaseInventoryHold,
+  consumeInventoryHold,
+} from '../../services/store/storeService';
 import { ImageUpload } from '../common/ImageUpload';
 import {
   getSafepayStatus,
@@ -52,6 +57,21 @@ export const CheckoutView: React.FC = () => {
     }).catch(err => {
       console.warn('Safepay status query note:', err);
     });
+
+    // Check if customer was redirected back after cancelling Safepay checkout
+    try {
+      const url = new URL(window.location.href);
+      const searchParams = new URLSearchParams(url.search || (url.hash.includes('?') ? url.hash.split('?')[1] : ''));
+      if (searchParams.get('cancelled') === 'true') {
+        const cancelledOrderId = searchParams.get('orderId');
+        if (cancelledOrderId) {
+          releaseInventoryHold(undefined, cancelledOrderId);
+          setErrorMessage('Safepay checkout was cancelled. Reserved items have been released.');
+        }
+      }
+    } catch {
+      // Ignore URL parsing fallback
+    }
   }, [storeId]);
 
   // Form State
@@ -134,10 +154,21 @@ export const CheckoutView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      // 1. Atomically reserve inventory hold (15-min stock lock) to prevent race conditions
+      const hold = await createInventoryHold(storeId, pricing.items, undefined, 15);
+      if (!hold.success) {
+        setErrorMessage(
+          hold.message ||
+          'One or more items in your cart are currently out of stock or reserved by another customer. Please review your cart.'
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       const orderNumber = `SE-${Math.floor(100000 + Math.random() * 900000)}`;
 
       if (paymentRail === 'safepay') {
-        // Create initial pending order in Firestore
+        // Create initial pending order in Supabase with attached reservation hold
         const orderId = await createOrder(storeId, {
           storeId,
           orderNumber,
@@ -152,6 +183,7 @@ export const CheckoutView: React.FC = () => {
           paymentMethodName: 'Safepay Online Checkout',
           paymentStatus: 'pending_verification',
           orderStatus: 'pending',
+          inventoryHoldId: hold.holdId,
         });
 
         // Initialize Safepay tracker session via server proxy
@@ -195,7 +227,13 @@ export const CheckoutView: React.FC = () => {
         orderStatus: 'pending',
         transactionReference: transactionRef || undefined,
         paymentProofUrl: proofImageBase64 || undefined,
+        inventoryHoldId: hold.holdId,
       });
+
+      // For confirmed manual orders, immediately consume the reservation and decrement physical stock
+      if (hold.holdId) {
+        await consumeInventoryHold(hold.holdId, orderId);
+      }
 
       setActiveOrderId(orderId);
       clearCart();
