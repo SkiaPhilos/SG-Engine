@@ -8,8 +8,13 @@ let adminSupabaseInstance: SupabaseClient | null = null;
  */
 export function getAdminSupabase(): SupabaseClient {
   if (!adminSupabaseInstance) {
-    const supabaseUrl = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '').trim();
+    const supabaseUrl = (
+      process.env.SUPABASE_URL ||
+      process.env.VITE_SUPABASE_URL ||
+      'https://herdyennsqwjusuikmis.supabase.co'
+    ).trim();
     const serviceRoleKey = (
+      process.env.SUPABASE_SECRET_KEY ||
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.VITE_SUPABASE_ANON_KEY ||
       process.env.SUPABASE_ANON_KEY ||
