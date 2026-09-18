@@ -1,0 +1,178 @@
+{
+  "entities": {
+    "StoreConfig": {
+      "title": "StoreConfig",
+      "description": "Store level configuration, branding, theme, and settings",
+      "type": "object",
+      "properties": {
+        "storeName": { "type": "string", "maxLength": 100 },
+        "storeDescription": { "type": "string", "maxLength": 500 },
+        "logoUrl": { "type": "string", "maxLength": 2048 },
+        "faviconUrl": { "type": "string", "maxLength": 2048 },
+        "currency": { "type": "string", "maxLength": 10 },
+        "currencySymbol": { "type": "string", "maxLength": 10 },
+        "contact": { "type": "object" },
+        "socialLinks": { "type": "object" },
+        "themeId": { "type": "string", "maxLength": 50 },
+        "themeCustomColors": { "type": "object" },
+        "productDisplayPreset": { "type": "string", "maxLength": 50 },
+        "homepageSections": { "type": "array" },
+        "deliveryConfig": { "type": "object" },
+        "checkoutConfig": { "type": "object" },
+        "searchEnabled": { "type": "boolean" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["storeName", "currency", "themeId", "updatedAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product category definition",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "slug": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "imageUrl": { "type": "string", "maxLength": 2048 },
+        "sortOrder": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "slug", "isActive", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Store product with pricing, discount, and inventory",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 200 },
+        "slug": { "type": "string", "maxLength": 220 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "price": { "type": "number" },
+        "compareAtPrice": { "type": "number" },
+        "discountPercent": { "type": "number" },
+        "categoryIds": { "type": "array" },
+        "images": { "type": "array" },
+        "primaryImageIndex": { "type": "number" },
+        "stock": { "type": "number" },
+        "sku": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["active", "draft", "archived"] },
+        "featured": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "price", "status", "updatedAt"]
+    },
+    "Offer": {
+      "title": "Offer",
+      "description": "Promotion, bundle, and discount rules",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 150 },
+        "description": { "type": "string", "maxLength": 500 },
+        "type": { "type": "string", "enum": ["free_quantity", "bundle", "free_product", "percentage_discount"] },
+        "status": { "type": "string", "enum": ["active", "inactive", "scheduled"] },
+        "primaryProductIds": { "type": "array" },
+        "primaryQuantity": { "type": "number" },
+        "rewardProductIds": { "type": "array" },
+        "rewardQuantity": { "type": "number" },
+        "pricingRule": { "type": "string", "enum": ["original", "percentage_discount", "custom_price"] },
+        "pricingValue": { "type": "number" },
+        "displayStyle": { "type": "string", "maxLength": 50 },
+        "badgeText": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "type", "status", "updatedAt"]
+    },
+    "PaymentMethod": {
+      "title": "PaymentMethod",
+      "description": "Store-configured payment destination",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "maxLength": 50 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "accountTitle": { "type": "string", "maxLength": 100 },
+        "accountNumber": { "type": "string", "maxLength": 100 },
+        "iban": { "type": "string", "maxLength": 50 },
+        "bankName": { "type": "string", "maxLength": 100 },
+        "instructions": { "type": "string", "maxLength": 1000 },
+        "qrCodeUrl": { "type": "string", "maxLength": 2048 },
+        "requireScreenshot": { "type": "boolean" },
+        "requireTransactionReference": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "sortOrder": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["type", "displayName", "enabled", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order with items, calculation, and payment proof",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string", "maxLength": 50 },
+        "customer": { "type": "object" },
+        "items": { "type": "array" },
+        "appliedOffers": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "discountTotal": { "type": "number" },
+        "deliveryFee": { "type": "number" },
+        "total": { "type": "number" },
+        "paymentMethodId": { "type": "string", "maxLength": 128 },
+        "paymentMethodName": { "type": "string", "maxLength": 100 },
+        "paymentStatus": { "type": "string", "enum": ["unpaid", "payment_submitted", "pending_verification", "paid", "rejected", "refunded"] },
+        "orderStatus": { "type": "string", "enum": ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"] },
+        "transactionReference": { "type": "string", "maxLength": 100 },
+        "paymentProofUrl": { "type": "string", "maxLength": 2048 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["orderNumber", "customer", "items", "total", "paymentStatus", "orderStatus", "createdAt", "updatedAt"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Administrator record for access authorization",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 255 },
+        "role": { "type": "string", "enum": ["super_admin", "admin"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/stores/{storeId}": {
+      "schema": "StoreConfig",
+      "description": "Top-level store configuration and settings"
+    },
+    "/stores/{storeId}/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Categories for the store"
+    },
+    "/stores/{storeId}/products/{productId}": {
+      "schema": "Product",
+      "description": "Products for the store"
+    },
+    "/stores/{storeId}/offers/{offerId}": {
+      "schema": "Offer",
+      "description": "Promotional offers and bundles for the store"
+    },
+    "/stores/{storeId}/paymentMethods/{paymentMethodId}": {
+      "schema": "PaymentMethod",
+      "description": "Configured payment destinations for the store"
+    },
+    "/stores/{storeId}/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders placed in the store"
+    },
+    "/admins/{adminUid}": {
+      "schema": "Admin",
+      "description": "Authoritative list of administrator UIDs"
+    }
+  }
+}

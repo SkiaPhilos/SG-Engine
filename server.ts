@@ -1,0 +1,203 @@
+import express, { Request, Response } from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+import {
+  initSafepayTracker,
+  verifyWebhookSignature,
+  processVerifiedWebhook,
+  getSafepayCredentials,
+  saveSafepayCredentials,
+  getSafepayStatus,
+  testSafepayConnection,
+} from './server/safepayService';
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  // Raw body parser for Safepay webhook signature validation (must run before standard json parser)
+  app.use(
+    '/api/safepay/webhook',
+    express.raw({ type: '*/*' })
+  );
+
+  // JSON parser for other API routes
+  app.use(express.json());
+
+  // Health check endpoint
+  app.get('/api/health', (req: Request, res: Response) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  /**
+   * GET /api/safepay/status
+   * Returns safe masked configuration status (never returns secret keys)
+   */
+  app.get('/api/safepay/status', async (req: Request, res: Response) => {
+    try {
+      const storeId = (req.query.storeId as string) || 'default';
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const baseUrl = `${protocol}://${host}`;
+
+      const status = await getSafepayStatus(storeId, baseUrl);
+      res.json(status);
+    } catch (err: any) {
+      console.error('Error fetching Safepay status:', err);
+      res.status(500).json({ error: 'Failed to read gateway status' });
+    }
+  });
+
+  /**
+   * POST /api/safepay/create-tracker
+   * Initiates payment tracker on Safepay, returns hosted checkout URL
+   */
+  app.post('/api/safepay/create-tracker', async (req: Request, res: Response) => {
+    try {
+      const { storeId = 'default', orderId, redirectUrl, cancelUrl } = req.body;
+
+      if (!orderId) {
+        return res.status(400).json({ error: 'Missing required orderId' });
+      }
+
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const baseUrl = `${protocol}://${host}`;
+
+      const finalRedirectUrl = redirectUrl || `${baseUrl}/#order_confirmation?orderId=${orderId}`;
+      const finalCancelUrl = cancelUrl || `${baseUrl}/#checkout?orderId=${orderId}&cancelled=true`;
+
+      const result = await initSafepayTracker({
+        storeId,
+        orderId,
+        redirectUrl: finalRedirectUrl,
+        cancelUrl: finalCancelUrl,
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      console.error('Error initializing Safepay tracker:', err);
+      res.status(400).json({ error: err.message || 'Payment tracker creation failed' });
+    }
+  });
+
+  /**
+   * POST /api/safepay/webhook
+   * Safepay webhook listener with HMAC signature verification
+   */
+  app.post('/api/safepay/webhook', async (req: Request, res: Response) => {
+    const storeId = (req.query.storeId as string) || 'default';
+
+    const signatureHeader =
+      (req.headers['x-sfpy-signature'] as string) ||
+      (req.headers['X-SFPY-SIGNATURE'] as string) ||
+      '';
+
+    const timestampHeader =
+      (req.headers['x-sfpy-timestamp'] as string) ||
+      (req.headers['X-SFPY-TIMESTAMP'] as string) ||
+      '';
+
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : (req.body || '');
+
+    // 1. Fetch credentials
+    const creds = await getSafepayCredentials(storeId);
+    if (!creds.webhookSecret) {
+      console.error('Safepay webhook received but webhookSecret is not configured on server');
+      return res.status(500).json({ error: 'Webhook secret not configured' });
+    }
+
+    // 2. Cryptographic HMAC verification
+    const verification = verifyWebhookSignature({
+      signatureHeader,
+      timestampHeader,
+      rawBody,
+      webhookSecret: creds.webhookSecret,
+    });
+
+    if (!verification.isValid) {
+      console.warn('Safepay Webhook HMAC Verification Failed:', verification.reason);
+      return res.status(401).json({ error: 'Unauthorized: Invalid signature', reason: verification.reason });
+    }
+
+    // 3. Parse JSON body after verification passes
+    let payload: any = {};
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (err) {
+      console.error('Failed to parse webhook JSON payload:', err);
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+
+    // 4. Process verified webhook & reconcile order
+    try {
+      const result = await processVerifiedWebhook(storeId, payload);
+      res.json({ received: true, handled: result.handled, orderId: result.orderId });
+    } catch (err: any) {
+      console.error('Error processing verified webhook:', err);
+      res.status(500).json({ error: 'Internal processing error' });
+    }
+  });
+
+  /**
+   * POST /api/safepay/configure
+   * Configures Safepay credentials safely on server (encrypted at rest)
+   */
+  app.post('/api/safepay/configure', async (req: Request, res: Response) => {
+    try {
+      const { storeId = 'default', apiKey, webhookSecret, environment, enabled } = req.body;
+
+      await saveSafepayCredentials(storeId, {
+        apiKey,
+        webhookSecret,
+        environment,
+        enabled,
+      });
+
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const baseUrl = `${protocol}://${host}`;
+
+      const status = await getSafepayStatus(storeId, baseUrl);
+      res.json({ success: true, status });
+    } catch (err: any) {
+      console.error('Error saving Safepay config:', err);
+      res.status(500).json({ error: 'Failed to update gateway configuration' });
+    }
+  });
+
+  /**
+   * POST /api/safepay/test-connection
+   * Diagnostic ping to verify Sandbox credentials
+   */
+  app.post('/api/safepay/test-connection', async (req: Request, res: Response) => {
+    try {
+      const { storeId = 'default' } = req.body;
+      const result = await testSafepayConnection(storeId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || 'Connection test failed' });
+    }
+  });
+
+  // Vite middleware for development vs static build in production
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Store Engine Server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer();

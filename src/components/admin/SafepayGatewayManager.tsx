@@ -1,0 +1,465 @@
+import React, { useEffect, useState } from 'react';
+import {
+  ShieldCheck,
+  Zap,
+  Key,
+  Webhook,
+  Check,
+  Copy,
+  AlertCircle,
+  AlertTriangle,
+  Save,
+  RotateCw,
+  Eye,
+  EyeOff,
+  Radio,
+  ExternalLink,
+  Lock,
+  Server,
+  RefreshCw,
+} from 'lucide-react';
+import { useStore } from '../../context/StoreContext';
+import {
+  getSafepayStatus,
+  configureSafepay,
+  testSafepayConnection,
+  SafepayStatusResponse,
+} from '../../services/safepay/safepayClient';
+
+export const SafepayGatewayManager: React.FC = () => {
+  const { storeId, themeColors } = useStore();
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+
+  // Form State (write-only for secrets)
+  const [enabled, setEnabled] = useState(false);
+  const [environment, setEnvironment] = useState<'sandbox' | 'production'>('sandbox');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [webhookSecretInput, setWebhookSecretInput] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showWebhookSecret, setShowWebhookSecret] = useState(false);
+
+  // Masked Status from Server
+  const [status, setStatus] = useState<SafepayStatusResponse | null>(null);
+
+  const loadStatus = async () => {
+    try {
+      const data = await getSafepayStatus(storeId);
+      setStatus(data);
+      setEnabled(data.enabled);
+      setEnvironment(data.environment);
+    } catch (err) {
+      console.error('Failed to load Safepay status:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadStatus();
+  }, [storeId]);
+
+  const handleCopyWebhook = () => {
+    const url = status?.webhookUrl || `${window.location.origin}/api/safepay/webhook`;
+    navigator.clipboard.writeText(url);
+    setCopiedWebhook(true);
+    setTimeout(() => setCopiedWebhook(false), 2000);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setSavedSuccess(false);
+    setSaveError(null);
+    setTestResult(null);
+
+    try {
+      const updatedStatus = await configureSafepay({
+        storeId,
+        apiKey: apiKeyInput.trim() ? apiKeyInput.trim() : undefined,
+        webhookSecret: webhookSecretInput.trim() ? webhookSecretInput.trim() : undefined,
+        environment,
+        enabled,
+      });
+
+      setStatus(updatedStatus);
+      setApiKeyInput('');
+      setWebhookSecretInput('');
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    } catch (err: any) {
+      setSaveError(err.message || 'Failed to update gateway configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await testSafepayConnection(storeId);
+      setTestResult(res);
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: err.message || 'Failed to reach backend connection test',
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-8 flex items-center justify-center">
+        <div className="animate-spin w-8 h-8 rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  const isConfigured = status?.hasApiKey && status?.hasWebhookSecret;
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-bold tracking-tight" style={{ color: themeColors.text }}>
+              Safepay Automated Gateway
+            </h2>
+            <span
+              className={`text-[11px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wider font-bold ${
+                status?.enabled
+                  ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20'
+                  : 'bg-neutral-500/10 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20'
+              }`}
+            >
+              {status?.enabled ? `Active (${status.environment})` : 'Disabled'}
+            </span>
+          </div>
+          <p className="text-xs mt-1" style={{ color: themeColors.muted }}>
+            Instant online checkout with credit/debit cards and digital wallets. Coexists alongside manual payment destinations.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={loadStatus}
+            title="Refresh Status"
+            className="p-2 rounded-xl border hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+            style={{ borderColor: themeColors.border, color: themeColors.text }}
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Security Architectural Notice */}
+      <div
+        className="p-4 rounded-2xl border flex items-start gap-3 text-xs"
+        style={{
+          borderColor: `${themeColors.primary}30`,
+          backgroundColor: `${themeColors.primary}08`,
+          color: themeColors.text,
+        }}
+      >
+        <Lock className="w-5 h-5 flex-shrink-0 text-emerald-600 mt-0.5" />
+        <div className="space-y-1">
+          <p className="font-bold">Zero-Exposure Server Architecture (ADR 010)</p>
+          <p style={{ color: themeColors.muted }}>
+            Safepay API credentials and webhook secrets are encrypted at rest with AES-256-GCM using <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-bold">SAFEPAY_ENCRYPTION_KEY</code> and stored in server-protected Firestore collections. Plaintext credentials are never delivered to the browser or customer storefront. Webhooks are cryptographically validated via HMAC-SHA256 before marking payments paid.
+          </p>
+        </div>
+      </div>
+
+      {/* Vault Diagnostic Warning (if encryption key is missing or decryption error) */}
+      {(status?.vault || status?.secretManager) &&
+        (status?.vault?.status === 'missing_key' || status?.vault?.status === 'error' || status?.secretManager?.status === 'missing_key' || status?.secretManager?.status === 'error') && (
+          <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 text-xs space-y-2">
+            <div className="flex items-center gap-2 font-bold">
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>
+                {(status?.vault?.status === 'missing_key' || status?.secretManager?.status === 'missing_key')
+                  ? 'Master Encryption Key Required (SAFEPAY_ENCRYPTION_KEY)'
+                  : 'Credential Decryption Issue'}
+              </span>
+            </div>
+            <p className="leading-relaxed">
+              {status.vault?.message || status.secretManager?.message}
+            </p>
+            {(status.vault?.details || status.secretManager?.details) && (
+              <p className="font-mono text-[11px] p-2 rounded-lg bg-black/5 dark:bg-black/20 break-all">
+                {status.vault?.details || status.secretManager?.details}
+              </p>
+            )}
+          </div>
+        )}
+
+      <form onSubmit={handleSave} className="space-y-6">
+        {/* Main Settings Card */}
+        <div
+          className="p-6 rounded-2xl border shadow-xs space-y-5"
+          style={{ backgroundColor: themeColors.surface, borderColor: themeColors.border }}
+        >
+          {/* Gateway Activation Toggle */}
+          <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: themeColors.border }}>
+            <div>
+              <p className="text-sm font-bold" style={{ color: themeColors.text }}>
+                Enable Safepay Checkout
+              </p>
+              <p className="text-xs" style={{ color: themeColors.muted }}>
+                Show Safepay instant checkout option to customers on checkout.
+              </p>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={e => setEnabled(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+            </label>
+          </div>
+
+          {/* Environment Mode Selector */}
+          <div>
+            <label className="block text-xs font-semibold mb-2" style={{ color: themeColors.text }}>
+              Operational Environment
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setEnvironment('sandbox')}
+                className={`p-3.5 rounded-xl border text-left transition-all ${
+                  environment === 'sandbox' ? 'ring-2' : 'hover:border-neutral-400'
+                }`}
+                style={{
+                  borderColor: environment === 'sandbox' ? themeColors.primary : themeColors.border,
+                  backgroundColor: environment === 'sandbox' ? `${themeColors.primary}08` : themeColors.background,
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold" style={{ color: themeColors.text }}>
+                    Sandbox Mode (Test)
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                    TEST
+                  </span>
+                </div>
+                <p className="text-[11px]" style={{ color: themeColors.muted }}>
+                  Connects to sandbox.api.getsafepay.com for testing simulated payments.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setEnvironment('production')}
+                className={`p-3.5 rounded-xl border text-left transition-all ${
+                  environment === 'production' ? 'ring-2' : 'hover:border-neutral-400'
+                }`}
+                style={{
+                  borderColor: environment === 'production' ? themeColors.primary : themeColors.border,
+                  backgroundColor: environment === 'production' ? `${themeColors.primary}08` : themeColors.background,
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold" style={{ color: themeColors.text }}>
+                    Production Mode (Live)
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                    LIVE
+                  </span>
+                </div>
+                <p className="text-[11px]" style={{ color: themeColors.muted }}>
+                  Connects to api.getsafepay.com for real monetary transactions in PKR.
+                </p>
+              </button>
+            </div>
+          </div>
+
+          {/* Webhook Endpoint URL */}
+          <div className="p-4 rounded-xl border space-y-2" style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold flex items-center gap-1.5" style={{ color: themeColors.text }}>
+                <Webhook className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Safepay Webhook Endpoint</span>
+              </label>
+              <button
+                type="button"
+                onClick={handleCopyWebhook}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+                style={{ borderColor: themeColors.border, color: themeColors.text }}
+              >
+                {copiedWebhook ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedWebhook ? 'Copied!' : 'Copy Webhook URL'}</span>
+              </button>
+            </div>
+
+            <p className="font-mono text-xs break-all py-1.5 px-2.5 rounded-lg bg-neutral-100 dark:bg-neutral-800" style={{ color: themeColors.text }}>
+              {status?.webhookUrl || `${window.location.origin}/api/safepay/webhook`}
+            </p>
+            <p className="text-[11px]" style={{ color: themeColors.muted }}>
+              Paste this URL into your Safepay Dashboard under Webhooks to receive verified payment confirmations.
+            </p>
+          </div>
+
+          {/* API Key (Write-Only) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
+                Safepay API Key {environment === 'sandbox' ? '(Sandbox Key)' : '(Production Key)'}
+              </label>
+              {status?.hasApiKey && (
+                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
+                  Saved: {status.maskedApiKey}
+                </span>
+              )}
+            </div>
+
+            <div className="relative">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={apiKeyInput}
+                onChange={e => setApiKeyInput(e.target.value)}
+                placeholder={status?.hasApiKey ? 'Enter new key to replace existing' : 'e.g. sec_sandbox_...'}
+                className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
+                style={{
+                  borderColor: themeColors.border,
+                  backgroundColor: themeColors.background,
+                  color: themeColors.text,
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px]" style={{ color: themeColors.muted }}>
+              Found in Safepay Dashboard &gt; Developer &gt; API Keys.
+            </p>
+          </div>
+
+          {/* Webhook Secret (Write-Only) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
+                Safepay Webhook Secret
+              </label>
+              {status?.hasWebhookSecret && (
+                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
+                  Saved: ••••••••••••••••
+                </span>
+              )}
+            </div>
+
+            <div className="relative">
+              <input
+                type={showWebhookSecret ? 'text' : 'password'}
+                value={webhookSecretInput}
+                onChange={e => setWebhookSecretInput(e.target.value)}
+                placeholder={status?.hasWebhookSecret ? 'Enter new secret to replace existing' : 'e.g. whsec_...'}
+                className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
+                style={{
+                  borderColor: themeColors.border,
+                  backgroundColor: themeColors.background,
+                  color: themeColors.text,
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowWebhookSecret(!showWebhookSecret)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              >
+                {showWebhookSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px]" style={{ color: themeColors.muted }}>
+              Shared secret used for computing HMAC-SHA256 signatures on incoming webhook notifications.
+            </p>
+          </div>
+
+          {/* Diagnostic Connection Test Button */}
+          <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t" style={{ borderColor: themeColors.border }}>
+            <div>
+              <p className="text-xs font-bold" style={{ color: themeColors.text }}>
+                Credential & Vault Validation
+              </p>
+              <p className="text-[11px]" style={{ color: themeColors.muted }}>
+                Test connectivity to AES-256-GCM encryption vault and Safepay sandbox API.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleTestConnection}
+              disabled={testing}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-semibold transition-all hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+              style={{ borderColor: themeColors.border, color: themeColors.text }}
+            >
+              {testing ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <Server className="w-3.5 h-3.5 text-indigo-500" />}
+              <span>
+                {testing
+                  ? 'Verifying...'
+                  : status?.hasApiKey
+                  ? 'Test Stored Credentials'
+                  : 'Test Encryption & Vault'}
+              </span>
+            </button>
+          </div>
+
+          {/* Test Result Message */}
+          {testResult && (
+            <div
+              className={`p-3.5 rounded-xl border text-xs flex items-center gap-2.5 ${
+                testResult.success
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-300'
+                  : 'bg-red-500/10 border-red-500/20 text-red-800 dark:text-red-300'
+              }`}
+            >
+              {testResult.success ? <Check className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
+              <span className="leading-relaxed">{testResult.message}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Save Error Box */}
+        {saveError && (
+          <div className="p-4 rounded-2xl border border-red-500/30 bg-red-500/10 text-red-900 dark:text-red-200 text-xs space-y-1.5">
+            <div className="flex items-center gap-2 font-bold">
+              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+              <span>Failed to Save Credentials</span>
+            </div>
+            <p className="leading-relaxed">{saveError}</p>
+          </div>
+        )}
+
+        {/* Save Action Bar */}
+        <div className="flex items-center justify-end gap-3">
+          <button
+            type="submit"
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-xs text-white shadow-xs transition-all active:scale-95 disabled:opacity-50"
+            style={{ backgroundColor: themeColors.primary }}
+          >
+            {savedSuccess ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+            <span>{saving ? 'Saving...' : savedSuccess ? 'Safepay Configured!' : 'Save Gateway Settings'}</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};

@@ -1,0 +1,6 @@
+{
+  "name": "Store Engine",
+  "description": "A reusable, configurable e-commerce store engine with dynamic theme presets, offer and bundle engine, product management, and direct payment destinations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
