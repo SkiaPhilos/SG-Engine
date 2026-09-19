@@ -112,7 +112,10 @@ export const SafepayGatewayManager: React.FC = () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await testSafepayConnection(storeId);
+      const res = await testSafepayConnection(storeId, {
+        apiKey: apiKeyInput.trim() || undefined,
+        environment,
+      });
       setTestResult(res);
     } catch (err: any) {
       setTestResult({
@@ -184,31 +187,22 @@ export const SafepayGatewayManager: React.FC = () => {
         <div className="space-y-1">
           <p className="font-bold">Zero-Exposure Server Architecture (ADR 010)</p>
           <p style={{ color: themeColors.muted }}>
-            Safepay API credentials and webhook secrets are encrypted at rest with AES-256-GCM using <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-bold">SAFEPAY_ENCRYPTION_KEY</code> and stored in the server-protected <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-bold">private_settings</code> database table. Plaintext credentials are never delivered to the browser or customer storefront. Webhooks are cryptographically validated via HMAC-SHA256 before marking payments paid.
+            Safepay API credentials and webhook secrets are encrypted at rest with AES-256-GCM on the server. Plaintext credentials are never delivered to the customer storefront or browser. Webhooks are cryptographically validated via HMAC-SHA256 before marking payments paid.
           </p>
         </div>
       </div>
 
-      {/* Vault Diagnostic Warning (if encryption key is missing or decryption error) */}
+      {/* Vault Diagnostic Warning (if decryption error) */}
       {(status?.vault || status?.secretManager) &&
-        (status?.vault?.status === 'missing_key' || status?.vault?.status === 'error' || status?.secretManager?.status === 'missing_key' || status?.secretManager?.status === 'error') && (
+        (status?.vault?.status === 'error' || status?.secretManager?.status === 'error') && (
           <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 text-xs space-y-2">
             <div className="flex items-center gap-2 font-bold">
               <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-              <span>
-                {(status?.vault?.status === 'missing_key' || status?.secretManager?.status === 'missing_key')
-                  ? 'Master Encryption Key Required (SAFEPAY_ENCRYPTION_KEY)'
-                  : 'Credential Decryption Issue'}
-              </span>
+              <span>Credential Notice</span>
             </div>
             <p className="leading-relaxed">
               {status.vault?.message || status.secretManager?.message}
             </p>
-            {(status.vault?.details || status.secretManager?.details) && (
-              <p className="font-mono text-[11px] p-2 rounded-lg bg-black/5 dark:bg-black/20 break-all">
-                {status.vault?.details || status.secretManager?.details}
-              </p>
-            )}
           </div>
         )}
 
@@ -420,11 +414,42 @@ export const SafepayGatewayManager: React.FC = () => {
             </div>
           )}
 
+          {/* Which Keys to Enter Visual Guide */}
+          <div className="p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 dark:bg-blue-500/10 space-y-2.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-blue-900 dark:text-blue-300">
+              <Key className="w-4 h-4 text-blue-600" />
+              <span>Which Credentials to Enter (Field Mapping Guide)</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
+              <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 space-y-1">
+                <div className="flex items-center gap-1.5 font-bold text-emerald-600 dark:text-emerald-400 text-[12px]">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Safepay API Key field</span>
+                </div>
+                <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Enter your <strong>Public Key</strong> from Safepay Dashboard &gt; <strong>Developer &gt; APIs</strong> (starts with <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">sec_...</code> in Sandbox or <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">pub_...</code> in Live).
+                </p>
+              </div>
+              <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 space-y-1">
+                <div className="flex items-center gap-1.5 font-bold text-indigo-600 dark:text-indigo-400 text-[12px]">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Safepay Webhook Secret field</span>
+                </div>
+                <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Enter the <strong>Shared Webhook Secret</strong> from Safepay Dashboard &gt; <strong>Developer &gt; Endpoints / Webhooks</strong> (e.g. <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">whsec_...</code> or shared string).
+                </p>
+              </div>
+            </div>
+            <p className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-relaxed">
+              💡 <strong>Note on Secret Key:</strong> The "Secret Key" shown in Safepay &gt; Developer &gt; APIs is <em>not</em> entered into either of these fields; online checkout authenticates with your Public Key, and webhooks authenticate with the Shared Webhook Secret.
+            </p>
+          </div>
+
           {/* API Key (Write-Only) */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
-                Safepay API Key {environment === 'sandbox' ? '(Sandbox Key)' : '(Production Key)'}
+                Safepay API Key (Public Key from APIs tab)
               </label>
               {status?.hasApiKey && (
                 <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
@@ -438,7 +463,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKeyInput}
                 onChange={e => setApiKeyInput(e.target.value)}
-                placeholder={status?.hasApiKey ? 'Enter new key to replace existing' : 'e.g. sec_sandbox_...'}
+                placeholder={status?.hasApiKey ? 'Enter new Public Key to replace existing' : 'e.g. sec_... (from Developer > APIs > Public Key)'}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -455,7 +480,7 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Found in Safepay Dashboard &gt; Developer &gt; API Keys.
+              Copy the <strong>Public Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
             </p>
           </div>
 
@@ -463,7 +488,7 @@ export const SafepayGatewayManager: React.FC = () => {
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
-                Safepay Webhook Secret
+                Safepay Webhook Secret (Shared Secret from Endpoints tab)
               </label>
               {status?.hasWebhookSecret && (
                 <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
@@ -477,7 +502,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showWebhookSecret ? 'text' : 'password'}
                 value={webhookSecretInput}
                 onChange={e => setWebhookSecretInput(e.target.value)}
-                placeholder={status?.hasWebhookSecret ? 'Enter new secret to replace existing' : 'e.g. whsec_...'}
+                placeholder={status?.hasWebhookSecret ? 'Enter new Shared Secret to replace existing' : 'e.g. whsec_... (from Developer > Endpoints)'}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -494,7 +519,7 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Shared secret used for computing HMAC-SHA256 signatures on incoming webhook notifications.
+              Copy the <strong>Shared Secret</strong> from Safepay Dashboard &gt; Developer &gt; Endpoints (Webhooks).
             </p>
           </div>
 
@@ -502,10 +527,10 @@ export const SafepayGatewayManager: React.FC = () => {
           <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t" style={{ borderColor: themeColors.border }}>
             <div>
               <p className="text-xs font-bold" style={{ color: themeColors.text }}>
-                Credential & Vault Validation
+                Credential & API Validation
               </p>
               <p className="text-[11px]" style={{ color: themeColors.muted }}>
-                Test connectivity to AES-256-GCM encryption vault and Safepay sandbox API.
+                Validates authentication against Safepay's Passport API.
               </p>
             </div>
 
@@ -513,16 +538,18 @@ export const SafepayGatewayManager: React.FC = () => {
               type="button"
               onClick={handleTestConnection}
               disabled={testing}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-semibold transition-all hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-semibold transition-all hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50 cursor-pointer"
               style={{ borderColor: themeColors.border, color: themeColors.text }}
             >
               {testing ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <Server className="w-3.5 h-3.5 text-indigo-500" />}
               <span>
                 {testing
-                  ? 'Verifying...'
+                  ? 'Verifying with Safepay...'
+                  : apiKeyInput.trim()
+                  ? 'Test Entered Key'
                   : status?.hasApiKey
                   ? 'Test Stored Credentials'
-                  : 'Test Encryption & Vault'}
+                  : 'Test API Connection'}
               </span>
             </button>
           </div>

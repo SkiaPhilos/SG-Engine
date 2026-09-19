@@ -181,18 +181,18 @@ async function startServer() {
       res.json({ success: true, status });
     } catch (err: any) {
       console.error('Error saving Safepay config:', err);
-      res.status(500).json({ error: 'Failed to update gateway configuration' });
+      res.status(500).json({ error: err.message || 'Failed to update gateway configuration' });
     }
   });
 
   /**
    * POST /api/safepay/test-connection
-   * Diagnostic ping to verify Sandbox credentials
+   * Diagnostic ping to verify Safepay credentials against Passport API
    */
   app.post('/api/safepay/test-connection', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default' } = req.body;
-      const result = await testSafepayConnection(storeId);
+      const { storeId = 'default', apiKey, environment } = req.body;
+      const result = await testSafepayConnection(storeId, { apiKey, environment });
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || 'Connection test failed' });

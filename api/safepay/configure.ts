@@ -27,6 +27,6 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ success: true, status });
   } catch (err: any) {
     console.error('Error saving Safepay config:', err);
-    return res.status(500).json({ error: 'Failed to update gateway configuration' });
+    return res.status(500).json({ error: err.message || 'Failed to update gateway configuration' });
   }
 }

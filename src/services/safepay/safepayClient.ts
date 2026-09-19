@@ -106,11 +106,14 @@ export async function configureSafepay(params: {
 /**
  * Admin operator: Test sandbox API connectivity.
  */
-export async function testSafepayConnection(storeId: string = 'default'): Promise<SafepayTestResponse> {
+export async function testSafepayConnection(
+  storeId: string = 'default',
+  options?: { apiKey?: string; environment?: 'sandbox' | 'production' }
+): Promise<SafepayTestResponse> {
   const res = await fetch('/api/safepay/test-connection', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ storeId }),
+    body: JSON.stringify({ storeId, ...options }),
   });
 
   if (!res.ok) {
