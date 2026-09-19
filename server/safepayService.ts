@@ -63,6 +63,24 @@ interface EncryptedSafepayPayload {
 }
 
 /**
+ * Safe database call wrapper with timeout to prevent hanging requests.
+ */
+async function withDbTimeout<T>(promise: PromiseLike<T> | Promise<T>, timeoutMs: number = 4000): Promise<T | null> {
+  let timer: any;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([Promise.resolve(promise), timeoutPromise]);
+    clearTimeout(timer);
+    return result;
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+/**
  * Derives a 32-byte (256-bit) encryption key for AES-256-GCM.
  * Uses SAFEPAY_ENCRYPTION_KEY or ENCRYPTION_MASTER_KEY if configured,
  * otherwise derives a deterministic key from project secrets to guarantee
@@ -148,26 +166,32 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     let encryptedData: any = null;
 
     // Try store_private_settings table (matches supabase-migration.sql)
-    const { data: storeData, error: storeErr } = await supabase
-      .from('store_private_settings')
-      .select('encrypted_payload')
-      .eq('store_id', storeId)
-      .eq('setting_key', 'safepay')
-      .maybeSingle();
-
-    if (!storeErr && storeData?.encrypted_payload) {
-      encryptedData = storeData.encrypted_payload;
-    } else {
-      // Fallback: try private_settings table with encrypted_data column
-      const { data: legacyData, error: legacyErr } = await supabase
-        .from('private_settings')
-        .select('encrypted_data')
+    const storeRes: any = await withDbTimeout(
+      supabase
+        .from('store_private_settings')
+        .select('encrypted_payload')
         .eq('store_id', storeId)
         .eq('setting_key', 'safepay')
-        .maybeSingle();
+        .maybeSingle(),
+      3000
+    );
 
-      if (!legacyErr && legacyData?.encrypted_data) {
-        encryptedData = legacyData.encrypted_data;
+    if (storeRes && !storeRes.error && storeRes.data?.encrypted_payload) {
+      encryptedData = storeRes.data.encrypted_payload;
+    } else {
+      // Fallback: try private_settings table with encrypted_data column
+      const legacyRes: any = await withDbTimeout(
+        supabase
+          .from('private_settings')
+          .select('encrypted_data')
+          .eq('store_id', storeId)
+          .eq('setting_key', 'safepay')
+          .maybeSingle(),
+        3000
+      );
+
+      if (legacyRes && !legacyRes.error && legacyRes.data?.encrypted_data) {
+        encryptedData = legacyRes.data.encrypted_data;
       }
     }
 
@@ -286,21 +310,24 @@ export async function saveSafepayCredentials(
 
   // 1. Try store_private_settings table (matches supabase-migration.sql)
   try {
-    const { error } = await supabase
-      .from('store_private_settings')
-      .upsert(
-        {
-          store_id: storeId,
-          setting_key: 'safepay',
-          encrypted_payload: encrypted,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'store_id,setting_key' }
-      );
-    if (!error) {
+    const storeRes: any = await withDbTimeout(
+      supabase
+        .from('store_private_settings')
+        .upsert(
+          {
+            store_id: storeId,
+            setting_key: 'safepay',
+            encrypted_payload: encrypted,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'store_id,setting_key' }
+        ),
+      4000
+    );
+    if (storeRes && !storeRes.error) {
       savedToDb = true;
-    } else {
-      lastDbError = error;
+    } else if (storeRes?.error) {
+      lastDbError = storeRes.error;
     }
   } catch (e: any) {
     lastDbError = e;
@@ -309,22 +336,25 @@ export async function saveSafepayCredentials(
   // 2. Fallback: try private_settings table with encrypted_data column
   if (!savedToDb) {
     try {
-      const { error: fallbackErr } = await supabase
-        .from('private_settings')
-        .upsert(
-          {
-            store_id: storeId,
-            setting_key: 'safepay',
-            encrypted_data: encrypted,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'store_id,setting_key' }
-        );
-      if (!fallbackErr) {
+      const fallbackRes: any = await withDbTimeout(
+        supabase
+          .from('private_settings')
+          .upsert(
+            {
+              store_id: storeId,
+              setting_key: 'safepay',
+              encrypted_data: encrypted,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'store_id,setting_key' }
+          ),
+        4000
+      );
+      if (fallbackRes && !fallbackRes.error) {
         savedToDb = true;
         lastDbError = null;
-      } else {
-        lastDbError = fallbackErr;
+      } else if (fallbackRes?.error) {
+        lastDbError = fallbackRes.error;
       }
     } catch (e: any) {
       lastDbError = e;

@@ -1,6 +1,14 @@
-import { getSafepayStatus } from '../../server/safepayService';
+import { getSafepayStatus } from './_safepayService.js';
 
 export default async function handler(req: any, res: any) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -14,7 +22,7 @@ export default async function handler(req: any, res: any) {
     const status = await getSafepayStatus(storeId, baseUrl);
     return res.status(200).json(status);
   } catch (err: any) {
-    console.error('Error fetching Safepay status:', err);
+    console.error('[SafepayStatus] Error fetching Safepay status:', err);
     return res.status(500).json({ error: 'Failed to read gateway status' });
   }
 }
