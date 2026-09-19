@@ -164,10 +164,11 @@ async function startServer() {
    */
   app.post('/api/safepay/configure', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', apiKey, webhookSecret, environment, enabled } = req.body;
+      const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled } = req.body;
 
       await saveSafepayCredentials(storeId, {
         apiKey,
+        secretKey,
         webhookSecret,
         environment,
         enabled,
@@ -187,12 +188,12 @@ async function startServer() {
 
   /**
    * POST /api/safepay/test-connection
-   * Diagnostic ping to verify Safepay credentials against Passport API
+   * Diagnostic ping to verify Safepay credentials against APIs
    */
   app.post('/api/safepay/test-connection', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', apiKey, environment } = req.body;
-      const result = await testSafepayConnection(storeId, { apiKey, environment });
+      const { storeId = 'default', apiKey, secretKey, environment } = req.body;
+      const result = await testSafepayConnection(storeId, { apiKey, secretKey, environment });
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || 'Connection test failed' });

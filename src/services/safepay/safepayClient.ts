@@ -13,8 +13,10 @@ export interface SafepayStatusResponse {
   enabled: boolean;
   environment: 'sandbox' | 'production';
   hasApiKey: boolean;
+  hasSecretKey?: boolean;
   hasWebhookSecret: boolean;
   maskedApiKey?: string;
+  maskedSecretKey?: string;
   webhookUrl: string;
   vault?: VaultDiagnostic;
   secretManager?: VaultDiagnostic;
@@ -84,6 +86,7 @@ export async function createSafepayTracker(params: {
 export async function configureSafepay(params: {
   storeId: string;
   apiKey?: string;
+  secretKey?: string;
   webhookSecret?: string;
   environment: 'sandbox' | 'production';
   enabled: boolean;
@@ -108,7 +111,7 @@ export async function configureSafepay(params: {
  */
 export async function testSafepayConnection(
   storeId: string = 'default',
-  options?: { apiKey?: string; environment?: 'sandbox' | 'production' }
+  options?: { apiKey?: string; secretKey?: string; environment?: 'sandbox' | 'production' }
 ): Promise<SafepayTestResponse> {
   const res = await fetch('/api/safepay/test-connection', {
     method: 'POST',
@@ -116,10 +119,10 @@ export async function testSafepayConnection(
     body: JSON.stringify({ storeId, ...options }),
   });
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.message || 'Connection test failed');
+  const data = await res.json().catch(() => ({ success: false, message: 'Invalid response from server' }));
+  if (!res.ok && !data.message) {
+    throw new Error(`Connection test failed (${res.status})`);
   }
 
-  return await res.json();
+  return data;
 }

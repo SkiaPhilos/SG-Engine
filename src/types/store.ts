@@ -216,8 +216,10 @@ export interface SafepayGatewayConfig {
   enabled: boolean;
   environment: 'sandbox' | 'production';
   hasApiKey: boolean;
+  hasSecretKey?: boolean;
   hasWebhookSecret: boolean;
   maskedApiKey?: string;
+  maskedSecretKey?: string;
   webhookUrl?: string;
   updatedAt?: string;
 }

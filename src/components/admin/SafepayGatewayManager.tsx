@@ -49,8 +49,10 @@ export const SafepayGatewayManager: React.FC = () => {
   const [enabled, setEnabled] = useState(false);
   const [environment, setEnvironment] = useState<'sandbox' | 'production'>('sandbox');
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const [secretKeyInput, setSecretKeyInput] = useState('');
   const [webhookSecretInput, setWebhookSecretInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showSecretKey, setShowSecretKey] = useState(false);
   const [showWebhookSecret, setShowWebhookSecret] = useState(false);
 
   // Masked Status from Server
@@ -91,6 +93,7 @@ export const SafepayGatewayManager: React.FC = () => {
       const updatedStatus = await configureSafepay({
         storeId,
         apiKey: apiKeyInput.trim() ? apiKeyInput.trim() : undefined,
+        secretKey: secretKeyInput.trim() ? secretKeyInput.trim() : undefined,
         webhookSecret: webhookSecretInput.trim() ? webhookSecretInput.trim() : undefined,
         environment,
         enabled,
@@ -98,6 +101,7 @@ export const SafepayGatewayManager: React.FC = () => {
 
       setStatus(updatedStatus);
       setApiKeyInput('');
+      setSecretKeyInput('');
       setWebhookSecretInput('');
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
@@ -114,6 +118,7 @@ export const SafepayGatewayManager: React.FC = () => {
     try {
       const res = await testSafepayConnection(storeId, {
         apiKey: apiKeyInput.trim() || undefined,
+        secretKey: secretKeyInput.trim() || undefined,
         environment,
       });
       setTestResult(res);
@@ -418,38 +423,49 @@ export const SafepayGatewayManager: React.FC = () => {
           <div className="p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 dark:bg-blue-500/10 space-y-2.5">
             <div className="flex items-center gap-2 text-xs font-bold text-blue-900 dark:text-blue-300">
               <Key className="w-4 h-4 text-blue-600" />
-              <span>Which Credentials to Enter (Field Mapping Guide)</span>
+              <span>Safepay Key Mapping Guide (3 Simple Fields)</span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+              {/* 1. Public Key */}
               <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 space-y-1">
                 <div className="flex items-center gap-1.5 font-bold text-emerald-600 dark:text-emerald-400 text-[12px]">
                   <Check className="w-3.5 h-3.5" />
-                  <span>Safepay API Key field</span>
+                  <span>1. Public Key</span>
                 </div>
                 <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                  Enter your <strong>Public Key</strong> from Safepay Dashboard &gt; <strong>Developer &gt; APIs</strong> (starts with <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">sec_...</code> in Sandbox or <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">pub_...</code> in Live).
+                  From Safepay &gt; <strong>Developer &gt; APIs &gt; Public Key</strong>. Starts with <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">sec_...</code> (Sandbox) or <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">pub_...</code> (Live). Used to initiate customer checkout sessions.
                 </p>
               </div>
+
+              {/* 2. Secret Key */}
+              <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 space-y-1">
+                <div className="flex items-center gap-1.5 font-bold text-purple-600 dark:text-purple-400 text-[12px]">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>2. Secret Key</span>
+                </div>
+                <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  From Safepay &gt; <strong>Developer &gt; APIs &gt; Secret Key</strong>. Private merchant key for backend server token creation (<code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">X-SFPY-MERCHANT-SECRET</code>).
+                </p>
+              </div>
+
+              {/* 3. Webhook Secret */}
               <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 space-y-1">
                 <div className="flex items-center gap-1.5 font-bold text-indigo-600 dark:text-indigo-400 text-[12px]">
                   <Check className="w-3.5 h-3.5" />
-                  <span>Safepay Webhook Secret field</span>
+                  <span>3. Webhook Secret</span>
                 </div>
                 <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                  Enter the <strong>Shared Webhook Secret</strong> from Safepay Dashboard &gt; <strong>Developer &gt; Endpoints / Webhooks</strong> (e.g. <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">whsec_...</code> or shared string).
+                  From Safepay &gt; <strong>Developer &gt; Endpoints &gt; Shared Secret</strong>. Used to cryptographically verify <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">X-SFPY-SIGNATURE</code> when orders are paid.
                 </p>
               </div>
             </div>
-            <p className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-relaxed">
-              💡 <strong>Note on Secret Key:</strong> The "Secret Key" shown in Safepay &gt; Developer &gt; APIs is <em>not</em> entered into either of these fields; online checkout authenticates with your Public Key, and webhooks authenticate with the Shared Webhook Secret.
-            </p>
           </div>
 
-          {/* API Key (Write-Only) */}
+          {/* 1. Public Key (API Key) */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
-                Safepay API Key (Public Key from APIs tab)
+                Safepay Public Key (from Developer &gt; APIs)
               </label>
               {status?.hasApiKey && (
                 <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
@@ -484,11 +500,50 @@ export const SafepayGatewayManager: React.FC = () => {
             </p>
           </div>
 
-          {/* Webhook Secret (Write-Only) */}
+          {/* 2. Secret Key */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
-                Safepay Webhook Secret (Shared Secret from Endpoints tab)
+                Safepay Secret Key (from Developer &gt; APIs)
+              </label>
+              {status?.hasSecretKey && (
+                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
+                  Saved: {status.maskedSecretKey}
+                </span>
+              )}
+            </div>
+
+            <div className="relative">
+              <input
+                type={showSecretKey ? 'text' : 'password'}
+                value={secretKeyInput}
+                onChange={e => setSecretKeyInput(e.target.value)}
+                placeholder={status?.hasSecretKey ? 'Enter new Secret Key to replace existing' : 'e.g. sec_... (from Developer > APIs > Secret Key)'}
+                className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
+                style={{
+                  borderColor: themeColors.border,
+                  backgroundColor: themeColors.background,
+                  color: themeColors.text,
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecretKey(!showSecretKey)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              >
+                {showSecretKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px]" style={{ color: themeColors.muted }}>
+              Copy the <strong>Secret Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
+            </p>
+          </div>
+
+          {/* 3. Webhook Secret (Write-Only) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold" style={{ color: themeColors.text }}>
+                Safepay Shared Webhook Secret (from Developer &gt; Endpoints)
               </label>
               {status?.hasWebhookSecret && (
                 <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
@@ -519,7 +574,7 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Copy the <strong>Shared Secret</strong> from Safepay Dashboard &gt; Developer &gt; Endpoints (Webhooks).
+              Copy the <strong>Shared Webhook Secret</strong> from Safepay Dashboard &gt; Developer &gt; Endpoints (Webhooks).
             </p>
           </div>
 
@@ -527,10 +582,10 @@ export const SafepayGatewayManager: React.FC = () => {
           <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t" style={{ borderColor: themeColors.border }}>
             <div>
               <p className="text-xs font-bold" style={{ color: themeColors.text }}>
-                Credential & API Validation
+                Live Credential & API Validation
               </p>
               <p className="text-[11px]" style={{ color: themeColors.muted }}>
-                Validates authentication against Safepay's Passport API.
+                Validates Public Key against Safepay order init & Secret Key against Passport API.
               </p>
             </div>
 
@@ -545,9 +600,9 @@ export const SafepayGatewayManager: React.FC = () => {
               <span>
                 {testing
                   ? 'Verifying with Safepay...'
-                  : apiKeyInput.trim()
-                  ? 'Test Entered Key'
-                  : status?.hasApiKey
+                  : (apiKeyInput.trim() || secretKeyInput.trim())
+                  ? 'Test Entered Keys'
+                  : (status?.hasApiKey || status?.hasSecretKey)
                   ? 'Test Stored Credentials'
                   : 'Test API Connection'}
               </span>
@@ -557,14 +612,14 @@ export const SafepayGatewayManager: React.FC = () => {
           {/* Test Result Message */}
           {testResult && (
             <div
-              className={`p-3.5 rounded-xl border text-xs flex items-center gap-2.5 ${
+              className={`p-3.5 rounded-xl border text-xs flex items-start gap-2.5 ${
                 testResult.success
                   ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-300'
                   : 'bg-red-500/10 border-red-500/20 text-red-800 dark:text-red-300'
               }`}
             >
-              {testResult.success ? <Check className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
-              <span className="leading-relaxed">{testResult.message}</span>
+              {testResult.success ? <Check className="w-4 h-4 flex-shrink-0 mt-0.5" /> : <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />}
+              <div className="whitespace-pre-line leading-relaxed">{testResult.message}</div>
             </div>
           )}
         </div>

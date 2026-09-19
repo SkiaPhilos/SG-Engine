@@ -10,10 +10,11 @@ export default async function handler(req: any, res: any) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const { storeId = 'default', apiKey, webhookSecret, environment, enabled } = body;
+    const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled } = body;
 
     await saveSafepayCredentials(storeId, {
       apiKey,
+      secretKey,
       webhookSecret,
       environment,
       enabled,
