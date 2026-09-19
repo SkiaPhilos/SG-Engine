@@ -1009,7 +1009,8 @@ export async function testSafepayConnection(
                   'X-SFPY-MERCHANT-SECRET': targetKey,
                 },
               });
-              if (secretCheckRes.ok) {
+              const sData = await secretCheckRes.json().catch(() => ({}));
+              if (secretCheckRes.ok && (Boolean(sData.data) || sData.status?.message === 'success')) {
                 isSecretKeyInWrongField = true;
               }
             } catch {
@@ -1050,7 +1051,7 @@ export async function testSafepayConnection(
         });
 
         const passData = await passportRes.json().catch(() => ({}));
-        if (passportRes.ok && (passData.data?.token || passData.status?.message === 'success')) {
+        if (passportRes.ok && (Boolean(passData.data) || passData.status?.message === 'success' || Boolean(passData.token))) {
           isAnyValid = true;
           results.push(`✓ Secret Key verified successfully with Safepay ${targetEnv.toUpperCase()} Passport API.`);
         } else {

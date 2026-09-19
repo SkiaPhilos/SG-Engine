@@ -490,7 +490,7 @@ export const SafepayGatewayManager: React.FC = () => {
                   <span>2. Secret Key</span>
                 </div>
                 <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                  From Safepay &gt; <strong>Developer &gt; APIs &gt; Secret Key</strong>. Private merchant key for backend server token creation (<code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">X-SFPY-MERCHANT-SECRET</code>).
+                  From Safepay &gt; <strong>Developer &gt; APIs &gt; Secret Key</strong>. A 64-character hex key used to sign transactions (<code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">X-SFPY-MERCHANT-SECRET</code>).
                 </p>
               </div>
 
@@ -584,7 +584,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showSecretKey ? 'text' : 'password'}
                 value={secretKeyInput}
                 onChange={e => setSecretKeyInput(e.target.value)}
-                placeholder={status?.hasSecretKey ? 'Enter new Secret Key to replace existing' : 'e.g. sec_... (from Developer > APIs > Secret Key)'}
+                placeholder={status?.hasSecretKey ? 'Enter new Secret Key to replace existing' : 'e.g. 0bd6f... (64-character hex key from Developer > APIs > Secret Key)'}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -601,7 +601,7 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Copy the <strong>Secret Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
+              Copy the <strong>Secret Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs (it is a 64-character hexadecimal key used to sign all transactions).
             </p>
             {secretKeyInput.length > 0 && (
               <div className="flex items-center gap-1.5 text-[11px] pt-0.5">
@@ -610,15 +610,24 @@ export const SafepayGatewayManager: React.FC = () => {
                     <AlertCircle className="w-3.5 h-3.5" />
                     Placeholder bullets detected. Please paste your actual Secret Key from Safepay.
                   </span>
+                ) : /^[0-9a-fA-F]{64}$/.test(secretKeyInput.trim()) ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" />
+                    ✓ Valid Safepay 64-character hex Secret Key recognized
+                  </span>
+                ) : /^[0-9a-fA-F]{32,63}$/.test(secretKeyInput.trim()) ? (
+                  <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Hex key entered ({secretKeyInput.trim().length}/64 characters). Make sure you copied the entire key.
+                  </span>
                 ) : secretKeyInput.startsWith('sec_') ? (
                   <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
                     <Check className="w-3.5 h-3.5" />
-                    Recognized Safepay Secret Key format ({secretKeyInput.length} chars)
+                    Recognized key format ({secretKeyInput.length} chars)
                   </span>
                 ) : (
-                  <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                    Format note: Safepay Secret Keys usually start with sec_.
+                  <span className="text-neutral-500 flex items-center gap-1">
+                    Key entered ({secretKeyInput.length} characters)
                   </span>
                 )}
               </div>
