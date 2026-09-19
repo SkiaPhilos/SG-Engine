@@ -80,6 +80,31 @@ export async function createSafepayTracker(params: {
 }
 
 /**
+ * Admin operator: Purge stored credentials.
+ */
+export async function clearSafepayCredentials(storeId: string = 'default'): Promise<SafepayStatusResponse> {
+  const res = await fetch('/api/safepay/clear', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ storeId }),
+  });
+
+  const text = await res.text();
+  let data: any = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Clear credentials failed (${res.status})`);
+  }
+
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || `Clear failed (${res.status})`);
+  }
+
+  return data.status;
+}
+
+/**
  * Admin operator: Configure or rotate Safepay credentials.
  * Inputs are sent directly to server-side encrypted vault.
  */
@@ -97,32 +122,92 @@ export async function configureSafepay(params: {
     body: JSON.stringify(params),
   });
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error || `Configuration update failed (${res.status})`);
+  const text = await res.text();
+  let data: any = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Configuration update failed (${res.status}): ${text.slice(0, 100)}`);
   }
 
-  const data = await res.json();
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || `Configuration update failed (${res.status})`);
+  }
+
   return data.status;
 }
 
 /**
  * Admin operator: Test sandbox API connectivity.
+ * Features dual-path testing: tests server-side token & order engine, with client-side fallback if server is unreachable.
  */
 export async function testSafepayConnection(
   storeId: string = 'default',
   options?: { apiKey?: string; secretKey?: string; environment?: 'sandbox' | 'production' }
 ): Promise<SafepayTestResponse> {
-  const res = await fetch('/api/safepay/test-connection', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ storeId, ...options }),
-  });
+  let serverResult: SafepayTestResponse | null = null;
+  let serverErrorMessage = '';
 
-  const data = await res.json().catch(() => ({ success: false, message: 'Invalid response from server' }));
-  if (!res.ok && !data.message) {
-    throw new Error(`Connection test failed (${res.status})`);
+  try {
+    const res = await fetch('/api/safepay/test-connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, ...options }),
+    });
+
+    const text = await res.text();
+    try {
+      serverResult = JSON.parse(text);
+    } catch {
+      serverErrorMessage = `Server returned non-JSON response (${res.status})`;
+    }
+  } catch (netErr: any) {
+    serverErrorMessage = `Network connection error: ${netErr.message}`;
   }
 
-  return data;
+  if (serverResult) {
+    return serverResult;
+  }
+
+  // Fallback direct client-side test if server endpoint was unreachable
+  if (options?.apiKey && !options.apiKey.includes('•') && options.apiKey.length > 5) {
+    const baseUrl = options.environment === 'production'
+      ? 'https://api.getsafepay.com'
+      : 'https://sandbox.api.getsafepay.com';
+    try {
+      const directRes = await fetch(`${baseUrl}/order/v1/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client: options.apiKey.trim(),
+          amount: 10000,
+          currency: 'PKR',
+          environment: options.environment || 'sandbox',
+        }),
+      });
+      const orderData = await directRes.json().catch(() => ({}));
+      if (directRes.ok && (orderData.status?.message === 'success' || orderData.data?.token)) {
+        return {
+          success: true,
+          message: `✓ Public Key verified directly with Safepay (${options.environment || 'sandbox'}).`,
+        };
+      } else {
+        const msg = orderData.status?.errors?.[0] || orderData.message || `Status ${directRes.status}`;
+        return {
+          success: false,
+          message: `✗ Safepay rejected Public Key (${msg}). Please verify your Public Key in Safepay Developer > APIs.`,
+        };
+      }
+    } catch (e: any) {
+      return {
+        success: false,
+        message: `${serverErrorMessage}. Direct test also failed: ${e.message}`,
+      };
+    }
+  }
+
+  return {
+    success: false,
+    message: serverErrorMessage || 'Failed to reach validation service',
+  };
 }

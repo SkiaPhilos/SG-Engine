@@ -9,6 +9,7 @@ import {
   saveSafepayCredentials,
   getSafepayStatus,
   testSafepayConnection,
+  clearSafepayCredentials,
 } from './server/safepayService';
 
 async function startServer() {
@@ -164,7 +165,7 @@ async function startServer() {
    */
   app.post('/api/safepay/configure', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled } = req.body;
+      const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled } = req.body || {};
 
       await saveSafepayCredentials(storeId, {
         apiKey,
@@ -182,7 +183,26 @@ async function startServer() {
       res.json({ success: true, status });
     } catch (err: any) {
       console.error('Error saving Safepay config:', err);
-      res.status(500).json({ error: err.message || 'Failed to update gateway configuration' });
+      res.status(400).json({ success: false, error: err.message || 'Failed to update gateway configuration' });
+    }
+  });
+
+  /**
+   * POST /api/safepay/clear
+   * Purges stored Safepay credentials completely from vault and cache
+   */
+  app.post('/api/safepay/clear', async (req: Request, res: Response) => {
+    try {
+      const { storeId = 'default' } = req.body || {};
+      await clearSafepayCredentials(storeId);
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const baseUrl = `${protocol}://${host}`;
+      const status = await getSafepayStatus(storeId, baseUrl);
+      res.json({ success: true, status, message: 'All stored Safepay credentials purged successfully.' });
+    } catch (err: any) {
+      console.error('Error clearing Safepay credentials:', err);
+      res.status(500).json({ success: false, error: err.message || 'Failed to clear credentials' });
     }
   });
 
@@ -192,11 +212,11 @@ async function startServer() {
    */
   app.post('/api/safepay/test-connection', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', apiKey, secretKey, environment } = req.body;
+      const { storeId = 'default', apiKey, secretKey, environment } = req.body || {};
       const result = await testSafepayConnection(storeId, { apiKey, secretKey, environment });
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message || 'Connection test failed' });
+      res.status(200).json({ success: false, message: `Connection test error: ${err.message || 'Unknown error'}` });
     }
   });
 
