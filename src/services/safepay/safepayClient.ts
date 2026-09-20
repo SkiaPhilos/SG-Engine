@@ -42,8 +42,18 @@ export async function getSafepayStatus(storeId: string = 'default'): Promise<Saf
     if (!res.ok) {
       throw new Error(`Status check failed: ${res.status}`);
     }
-    return await res.json();
+    const data = await res.json();
+    try {
+      localStorage.setItem(`safepay_status_cache_${storeId}`, JSON.stringify(data));
+    } catch {}
+    return data;
   } catch (err) {
+    try {
+      const cached = localStorage.getItem(`safepay_status_cache_${storeId}`);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch {}
     return {
       configured: false,
       enabled: false,
@@ -134,6 +144,10 @@ export async function configureSafepay(params: {
     throw new Error(data.error || `Configuration update failed (${res.status})`);
   }
 
+  try {
+    localStorage.setItem(`safepay_status_cache_${params.storeId}`, JSON.stringify(data.status));
+  } catch {}
+
   return data.status;
 }
 
@@ -143,7 +157,7 @@ export async function configureSafepay(params: {
  */
 export async function testSafepayConnection(
   storeId: string = 'default',
-  options?: { apiKey?: string; secretKey?: string; environment?: 'sandbox' | 'production' }
+  options?: { apiKey?: string; secretKey?: string; webhookSecret?: string; environment?: 'sandbox' | 'production' }
 ): Promise<SafepayTestResponse> {
   let serverResult: SafepayTestResponse | null = null;
   let serverErrorMessage = '';

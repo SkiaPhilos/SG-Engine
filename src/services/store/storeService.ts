@@ -223,6 +223,80 @@ export async function getStoreConfig(storeId = DEFAULT_STORE_ID): Promise<StoreC
   }
 }
 
+// ============================================================================
+// Real-time Event Bus & State Synchronization
+// ============================================================================
+
+export type StoreDataChangeType = 'config' | 'categories' | 'products' | 'offers' | 'payment_methods' | 'orders';
+
+export interface StoreSubscriptionListener {
+  storeId: string;
+  callbacks: {
+    onStoreConfig?: (config: StoreConfig) => void;
+    onCategories?: (categories: Category[]) => void;
+    onProducts?: (products: Product[]) => void;
+    onOffers?: (offers: Offer[]) => void;
+    onPaymentMethods?: (methods: PaymentMethod[]) => void;
+    onOrders?: (orders: Order[]) => void;
+  };
+}
+
+export const activeStoreSubscriptions = new Set<StoreSubscriptionListener>();
+
+export function notifyStoreChange(storeId: string, type: StoreDataChangeType, data?: any) {
+  for (const sub of activeStoreSubscriptions) {
+    if (sub.storeId === storeId) {
+      try {
+        if (type === 'products' && sub.callbacks.onProducts) {
+          if (data) {
+            sub.callbacks.onProducts(data);
+          } else {
+            getProducts(storeId).then(p => sub.callbacks.onProducts?.(p)).catch(() => {});
+          }
+        } else if (type === 'categories' && sub.callbacks.onCategories) {
+          if (data) {
+            sub.callbacks.onCategories(data);
+          } else {
+            getCategories(storeId).then(c => sub.callbacks.onCategories?.(c)).catch(() => {});
+          }
+        } else if (type === 'offers' && sub.callbacks.onOffers) {
+          if (data) {
+            sub.callbacks.onOffers(data);
+          } else {
+            getOffers(storeId).then(o => sub.callbacks.onOffers?.(o)).catch(() => {});
+          }
+        } else if (type === 'payment_methods' && sub.callbacks.onPaymentMethods) {
+          if (data) {
+            sub.callbacks.onPaymentMethods(data);
+          } else {
+            getPaymentMethods(storeId).then(pm => sub.callbacks.onPaymentMethods?.(pm)).catch(() => {});
+          }
+        } else if (type === 'config' && sub.callbacks.onStoreConfig) {
+          if (data) {
+            sub.callbacks.onStoreConfig(data);
+          } else {
+            getStoreConfig(storeId).then(cfg => sub.callbacks.onStoreConfig?.(cfg)).catch(() => {});
+          }
+        } else if (type === 'orders' && sub.callbacks.onOrders) {
+          if (data) {
+            sub.callbacks.onOrders(data);
+          } else {
+            getOrders(storeId).then(ord => sub.callbacks.onOrders?.(ord)).catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn(`Error in store notification callback for ${type}:`, err);
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('store_data_changed', { detail: { storeId, type, data } }));
+    } catch {}
+  }
+}
+
 export async function saveStoreConfig(storeId = DEFAULT_STORE_ID, config: Partial<StoreConfig>): Promise<void> {
   const merged: StoreConfig = {
     ...DEFAULT_STORE_CONFIG,
@@ -232,6 +306,7 @@ export async function saveStoreConfig(storeId = DEFAULT_STORE_ID, config: Partia
     updatedAt: new Date().toISOString(),
   };
   setLocalItem(`config_${storeId}`, merged);
+  notifyStoreChange(storeId, 'config', merged);
 
   if (!isSupabaseConfigured()) return;
 
@@ -307,6 +382,7 @@ export async function saveCategory(
     ? localList.map(c => (c.id === catId ? newCategory : c))
     : [...localList, newCategory];
   setLocalItem(`categories_${storeId}`, updatedLocal);
+  notifyStoreChange(storeId, 'categories', updatedLocal);
 
   if (!isSupabaseConfigured()) return catId;
 
@@ -331,7 +407,9 @@ export async function saveCategory(
 export async function deleteCategory(storeId = DEFAULT_STORE_ID, categoryId: string): Promise<void> {
   // Update local cache
   const localList = getLocalItem<Category[]>(`categories_${storeId}`, []);
-  setLocalItem(`categories_${storeId}`, localList.filter(c => c.id !== categoryId));
+  const updated = localList.filter(c => c.id !== categoryId);
+  setLocalItem(`categories_${storeId}`, updated);
+  notifyStoreChange(storeId, 'categories', updated);
 
   if (!isSupabaseConfigured()) return;
 
@@ -404,7 +482,11 @@ export async function saveProduct(
   product: Partial<Product> & { name: string; price: number }
 ): Promise<string> {
   const prodId = product.id || `prod_${Date.now()}`;
-  const slug = product.slug || product.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  const baseSlug = (product.slug || product.name || 'product')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '') || 'product';
+  const slug = product.slug || `${baseSlug}-${prodId.slice(-6)}`;
 
   const newProduct: Product = {
     id: prodId,
@@ -426,12 +508,13 @@ export async function saveProduct(
     updatedAt: new Date().toISOString(),
   };
 
-  // Local cache
+  // Immediate local cache update
   const localList = getLocalItem<Product[]>(`products_${storeId}`, []);
   const updatedLocal = localList.some(p => p.id === prodId)
     ? localList.map(p => (p.id === prodId ? newProduct : p))
     : [...localList, newProduct];
   setLocalItem(`products_${storeId}`, updatedLocal);
+  notifyStoreChange(storeId, 'products', updatedLocal);
 
   if (!isSupabaseConfigured()) return prodId;
 
@@ -442,20 +525,21 @@ export async function saveProduct(
       .upsert({ ...row, id: prodId, store_id: storeId }, { onConflict: 'id' });
 
     if (error) {
-      console.error('Supabase saveProduct error:', error.message);
-      throw error;
+      console.warn('Supabase saveProduct non-fatal sync notice:', error.message);
     }
 
     return prodId;
-  } catch (err) {
-    console.error('saveProduct exception:', err);
-    throw err;
+  } catch (err: any) {
+    console.warn('saveProduct sync exception (retained in local cache):', err?.message || err);
+    return prodId;
   }
 }
 
 export async function deleteProduct(storeId = DEFAULT_STORE_ID, productId: string): Promise<void> {
   const localList = getLocalItem<Product[]>(`products_${storeId}`, []);
-  setLocalItem(`products_${storeId}`, localList.filter(p => p.id !== productId));
+  const updated = localList.filter(p => p.id !== productId);
+  setLocalItem(`products_${storeId}`, updated);
+  notifyStoreChange(storeId, 'products', updated);
 
   if (!isSupabaseConfigured()) return;
 
@@ -467,12 +551,10 @@ export async function deleteProduct(storeId = DEFAULT_STORE_ID, productId: strin
       .eq('store_id', storeId);
 
     if (error) {
-      console.error('Supabase deleteProduct error:', error.message);
-      throw error;
+      console.warn('Supabase deleteProduct sync notice:', error.message);
     }
-  } catch (err) {
-    console.error('deleteProduct exception:', err);
-    throw err;
+  } catch (err: any) {
+    console.warn('deleteProduct sync exception:', err?.message || err);
   }
 }
 
@@ -535,6 +617,7 @@ export async function saveOffer(
     ? localList.map(o => (o.id === offerId ? newOffer : o))
     : [...localList, newOffer];
   setLocalItem(`offers_${storeId}`, updatedLocal);
+  notifyStoreChange(storeId, 'offers', updatedLocal);
 
   if (!isSupabaseConfigured()) return offerId;
 
@@ -558,7 +641,9 @@ export async function saveOffer(
 
 export async function deleteOffer(storeId = DEFAULT_STORE_ID, offerId: string): Promise<void> {
   const localList = getLocalItem<Offer[]>(`offers_${storeId}`, []);
-  setLocalItem(`offers_${storeId}`, localList.filter(o => o.id !== offerId));
+  const updated = localList.filter(o => o.id !== offerId);
+  setLocalItem(`offers_${storeId}`, updated);
+  notifyStoreChange(storeId, 'offers', updated);
 
   if (!isSupabaseConfigured()) return;
 
@@ -639,6 +724,7 @@ export async function savePaymentMethod(
     ? localList.map(m => (m.id === methodId ? newMethod : m))
     : [...localList, newMethod];
   setLocalItem(`payment_methods_${storeId}`, updatedLocal);
+  notifyStoreChange(storeId, 'payment_methods', updatedLocal);
 
   if (!isSupabaseConfigured()) return methodId;
 
@@ -662,7 +748,9 @@ export async function savePaymentMethod(
 
 export async function deletePaymentMethod(storeId = DEFAULT_STORE_ID, methodId: string): Promise<void> {
   const localList = getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
-  setLocalItem(`payment_methods_${storeId}`, localList.filter(m => m.id !== methodId));
+  const updated = localList.filter(m => m.id !== methodId);
+  setLocalItem(`payment_methods_${storeId}`, updated);
+  notifyStoreChange(storeId, 'payment_methods', updated);
 
   if (!isSupabaseConfigured()) return;
 
@@ -702,7 +790,9 @@ export async function createOrder(
 
   // Local cache
   const localOrders = getLocalItem<Order[]>(`orders_${storeId}`, []);
-  setLocalItem(`orders_${storeId}`, [order, ...localOrders]);
+  const updatedOrders = [order, ...localOrders];
+  setLocalItem(`orders_${storeId}`, updatedOrders);
+  notifyStoreChange(storeId, 'orders', updatedOrders);
 
   if (!isSupabaseConfigured()) return orderId;
 
@@ -846,10 +936,9 @@ export async function updateOrderStatus(
   const existingOrder = local.find(o => o.id === orderId);
   const fromStatus = existingOrder?.orderStatus;
 
-  setLocalItem(
-    `orders_${storeId}`,
-    local.map(o => (o.id === orderId ? { ...o, orderStatus, updatedAt: new Date().toISOString() } : o))
-  );
+  const updatedOrders = local.map(o => (o.id === orderId ? { ...o, orderStatus, updatedAt: new Date().toISOString() } : o));
+  setLocalItem(`orders_${storeId}`, updatedOrders);
+  notifyStoreChange(storeId, 'orders', updatedOrders);
 
   if (!isSupabaseConfigured()) return;
 
@@ -895,10 +984,9 @@ export async function updatePaymentStatus(
   const existingOrder = local.find(o => o.id === orderId);
   const fromStatus = existingOrder?.paymentStatus;
 
-  setLocalItem(
-    `orders_${storeId}`,
-    local.map(o => (o.id === orderId ? { ...o, paymentStatus, updatedAt: new Date().toISOString() } : o))
-  );
+  const updatedOrders = local.map(o => (o.id === orderId ? { ...o, paymentStatus, updatedAt: new Date().toISOString() } : o));
+  setLocalItem(`orders_${storeId}`, updatedOrders);
+  notifyStoreChange(storeId, 'orders', updatedOrders);
 
   if (!isSupabaseConfigured()) return;
 
@@ -1269,6 +1357,10 @@ export function subscribeStoreData(
 ): () => void {
   let isMounted = true;
 
+  // Register in-memory active listener for instant zero-latency callbacks
+  const listener: StoreSubscriptionListener = { storeId, callbacks };
+  activeStoreSubscriptions.add(listener);
+
   // Immediate initial load from Supabase / local cache
   const refreshAll = async () => {
     try {
@@ -1298,84 +1390,123 @@ export function subscribeStoreData(
 
   refreshAll();
 
-  // If Supabase credentials are not configured, poll local changes periodically or return no-op
-  if (!isSupabaseConfigured()) {
-    const interval = setInterval(() => {
-      if (isMounted) {
-        callbacks.onStoreConfig?.(getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId }));
-        callbacks.onCategories?.(getLocalItem<Category[]>(`categories_${storeId}`, []));
-        callbacks.onProducts?.(getLocalItem<Product[]>(`products_${storeId}`, []));
-        callbacks.onOffers?.(getLocalItem<Offer[]>(`offers_${storeId}`, []));
-        callbacks.onPaymentMethods?.(getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []));
-        if (callbacks.onOrders) {
-          callbacks.onOrders(getLocalItem<Order[]>(`orders_${storeId}`, []));
-        }
+  // Listen to window-level custom events for instant cross-component updates
+  const handleCustomEvent = (e: Event) => {
+    if (!isMounted) return;
+    const detail = (e as CustomEvent).detail;
+    if (detail && detail.storeId === storeId) {
+      if (detail.type === 'products' && callbacks.onProducts) {
+        if (detail.data) callbacks.onProducts(detail.data);
+        else getProducts(storeId).then(p => isMounted && callbacks.onProducts?.(p));
+      } else if (detail.type === 'categories' && callbacks.onCategories) {
+        if (detail.data) callbacks.onCategories(detail.data);
+        else getCategories(storeId).then(c => isMounted && callbacks.onCategories?.(c));
+      } else if (detail.type === 'offers' && callbacks.onOffers) {
+        if (detail.data) callbacks.onOffers(detail.data);
+        else getOffers(storeId).then(o => isMounted && callbacks.onOffers?.(o));
+      } else if (detail.type === 'payment_methods' && callbacks.onPaymentMethods) {
+        if (detail.data) callbacks.onPaymentMethods(detail.data);
+        else getPaymentMethods(storeId).then(pm => isMounted && callbacks.onPaymentMethods?.(pm));
+      } else if (detail.type === 'config' && callbacks.onStoreConfig) {
+        if (detail.data) callbacks.onStoreConfig(detail.data);
+        else getStoreConfig(storeId).then(cfg => isMounted && callbacks.onStoreConfig?.(cfg));
+      } else if (detail.type === 'orders' && callbacks.onOrders) {
+        if (detail.data) callbacks.onOrders(detail.data);
+        else getOrders(storeId).then(ord => isMounted && callbacks.onOrders?.(ord));
       }
-    }, 4000);
+    }
+  };
 
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('store_data_changed', handleCustomEvent);
   }
 
-  // Subscribe to Supabase Postgres real-time changes
-  const channel = supabase
-    .channel(`store_channel_${storeId}_${Date.now()}`)
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'stores', filter: `id=eq.${storeId}` },
-      async () => {
-        const conf = await getStoreConfig(storeId);
-        if (isMounted) callbacks.onStoreConfig?.(conf);
+  // Polling interval as universal fallback (syncs across tabs and ensures updates reflect reliably)
+  const pollInterval = setInterval(() => {
+    if (!isMounted) return;
+    if (!isSupabaseConfigured()) {
+      callbacks.onStoreConfig?.(getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId }));
+      callbacks.onCategories?.(getLocalItem<Category[]>(`categories_${storeId}`, []));
+      callbacks.onProducts?.(getLocalItem<Product[]>(`products_${storeId}`, []));
+      callbacks.onOffers?.(getLocalItem<Offer[]>(`offers_${storeId}`, []));
+      callbacks.onPaymentMethods?.(getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []));
+      if (callbacks.onOrders) {
+        callbacks.onOrders(getLocalItem<Order[]>(`orders_${storeId}`, []));
       }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'categories', filter: `store_id=eq.${storeId}` },
-      async () => {
-        const cats = await getCategories(storeId);
-        if (isMounted) callbacks.onCategories?.(cats);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'products', filter: `store_id=eq.${storeId}` },
-      async () => {
-        const prods = await getProducts(storeId);
-        if (isMounted) callbacks.onProducts?.(prods);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'offers', filter: `store_id=eq.${storeId}` },
-      async () => {
-        const offs = await getOffers(storeId);
-        if (isMounted) callbacks.onOffers?.(offs);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'payment_methods', filter: `store_id=eq.${storeId}` },
-      async () => {
-        const pms = await getPaymentMethods(storeId);
-        if (isMounted) callbacks.onPaymentMethods?.(pms);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` },
-      async () => {
-        if (callbacks.onOrders) {
-          const ords = await getOrders(storeId);
-          if (isMounted) callbacks.onOrders(ords);
+    } else {
+      // Periodic background verification from Supabase
+      getProducts(storeId).then(p => {
+        if (isMounted && p && p.length > 0) callbacks.onProducts?.(p);
+      }).catch(() => {});
+    }
+  }, 3500);
+
+  let channel: any = null;
+  if (isSupabaseConfigured()) {
+    channel = supabase
+      .channel(`store_channel_${storeId}_${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'stores', filter: `id=eq.${storeId}` },
+        async () => {
+          const conf = await getStoreConfig(storeId);
+          if (isMounted) callbacks.onStoreConfig?.(conf);
         }
-      }
-    )
-    .subscribe();
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'categories', filter: `store_id=eq.${storeId}` },
+        async () => {
+          const cats = await getCategories(storeId);
+          if (isMounted) callbacks.onCategories?.(cats);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products', filter: `store_id=eq.${storeId}` },
+        async () => {
+          const prods = await getProducts(storeId);
+          if (isMounted) callbacks.onProducts?.(prods);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'offers', filter: `store_id=eq.${storeId}` },
+        async () => {
+          const offs = await getOffers(storeId);
+          if (isMounted) callbacks.onOffers?.(offs);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'payment_methods', filter: `store_id=eq.${storeId}` },
+        async () => {
+          const pms = await getPaymentMethods(storeId);
+          if (isMounted) callbacks.onPaymentMethods?.(pms);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` },
+        async () => {
+          if (callbacks.onOrders) {
+            const ords = await getOrders(storeId);
+            if (isMounted) callbacks.onOrders(ords);
+          }
+        }
+      )
+      .subscribe();
+  }
 
   return () => {
     isMounted = false;
-    supabase.removeChannel(channel);
+    activeStoreSubscriptions.delete(listener);
+    clearInterval(pollInterval);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('store_data_changed', handleCustomEvent);
+    }
+    if (channel) {
+      supabase.removeChannel(channel);
+    }
   };
 }

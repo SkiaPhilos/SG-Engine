@@ -12,12 +12,12 @@
 | :--- | :--- | :--- | :--- |
 | **Phase 1** | Core Architecture & Clean State Isolation | COMPLETED | 100% |
 | **Phase 2** | Design Intelligence & Theme Engine | IN PROGRESS | 60% |
-| **Phase 3** | Catalog & Category Presentation | IN PROGRESS | 50% |
+| **Phase 3** | Catalog & Category Presentation | COMPLETED | 100% |
 | **Phase 4** | Offer, Bundle & Visual Composition | IN PROGRESS | 40% |
 | **Phase 5** | Modular Homepage Builder | IN PROGRESS | 45% |
 | **Phase 6** | Direct Payment Destination Engine | IN PROGRESS | 65% |
 | **Phase 7** | Shopping Bag, Checkout & Order Immutability | IN PROGRESS | 75% |
-| **Phase 8** | Private Admin Suite & Readiness Wizard | IN PROGRESS | 60% |
+| **Phase 8** | Private Admin Suite & Readiness Wizard | IN PROGRESS | 65% |
 | **Phase 9** | Zero-Residue Audit, A11y & Performance | NOT STARTED | 0% |
 | **Phase 10** | Safepay Gateway & Server-Side Security | COMPLETED | 100% |
 
@@ -129,6 +129,10 @@
   Decoupled Vercel deployment builds from Cloud Run container requirements: configured `"buildCommand": "vite build"` in `vercel.json` so Vercel no longer executes `esbuild server.ts`. Updated SPA routing with regex negative lookahead `/((?!api/.*).*)` to preserve `/api/*` for native Vercel Serverless Functions. Hardened `vite.config.ts` via `loadEnv` and build-time `define` blocks to universally capture `VITE_SUPABASE_URL`, `SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_URL`.
 - **ADR 014 (2026-09-18) - Safepay Payments 2.0 & Webhooks v2 Specification Alignment**:
   Audited Safepay Payments 2.0 and Webhooks v2 architectural requirements against official documentation. Enhanced checkout tracker initialization (`/order/v1/init`) to pass full customer identity (`first_name`, `last_name`, `phone`) and metadata (`order_id`, `order_number`, `store_id`), allowing transactions to cleanly populate the merchant's **Payments > Payments 2.0** dashboard tab. Enhanced webhook processing across Express (`server.ts`) and Vercel serverless (`api/safepay/webhook.ts`) to capture `X-SFPY-EVENT-ID`, `X-SFPY-EVENT-TYPE`, and `X-SFPY-AGGREGATOR-ID` headers. Event ID is prioritized as the primary distributed idempotency key (`safepay:event:${eventId}`) for guaranteed delivery deduplication. Extended lifecycle event handling to capture failure/declines (`payment.failed`) and refunds (`refund.completed`) with automatic logging to the `order_events` audit trail. Integrated an in-app **Sandbox Test Cards & 3DS Guidance** helper into `SafepayGatewayManager.tsx` featuring 1-click copyable test credentials.
+- **ADR 015 (2026-09-20) - Zero-Latency Local-First Product Catalog Reactivity**:
+  Resolved catalog update latency where newly created products required a browser page reload to appear. Implemented guaranteed unique slug generation (`${baseSlug}-${prodId.slice(-6)}`) preventing PostgreSQL unique constraint aborts. Coupled immediate local storage caching with synchronous dispatch across `activeStoreSubscriptions` and `window` `store_data_changed` CustomEvents. Hardened remote synchronization to log non-fatal warnings without throwing, guaranteeing the active UI catalog updates immediately upon clicking "Save Product".
+- **ADR 016 (2026-09-20) - Deterministic Safepay Key Persistence & Authentic Verification**:
+  Resolved key persistence across admin tab navigation by coupling server disk vault backup (`.safepay_vault.json`) with client draft persistence (`safepay_keys_draft_${storeId}`). Removed speculative "swap" checks and unverified success statuses in `testSafepayConnection` across both Express and Vercel serverless engines. Tests now strictly validate against Safepay's official `/order/v1/init` and `/client/passport/v1/token` endpoints, accurately reporting failure on invalid credentials and clearly explaining that webhook shared secrets are verified dynamically via HMAC-SHA256 during live webhook delivery.
 
 ---
 

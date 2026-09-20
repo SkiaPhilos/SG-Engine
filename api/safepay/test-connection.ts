@@ -31,8 +31,8 @@ export default async function handler(req: any, res: any) {
       body = {};
     }
 
-    const { storeId = 'default', apiKey, secretKey, environment } = body;
-    const result = await testSafepayConnection(storeId, { apiKey, secretKey, environment });
+    const { storeId = 'default', apiKey, secretKey, webhookSecret, environment } = body;
+    const result = await testSafepayConnection(storeId, { apiKey, secretKey, webhookSecret, environment });
     return res.status(200).json(result);
   } catch (err: any) {
     console.error('[SafepayTestConnection] Error:', err);

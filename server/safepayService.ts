@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { getAdminSupabase } from './supabaseAdmin';
 
 export interface SafepayCredentials {
@@ -38,7 +40,46 @@ interface CachedCredentials {
   cachedAt: number;
 }
 const credentialsCache = new Map<string, CachedCredentials>();
-const CACHE_TTL_MS = 60 * 1000; // 1 minute TTL
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours TTL
+
+const VAULT_FILE_PATH = path.join(process.cwd(), '.safepay_vault.json');
+
+function saveToLocalVaultFile(storeId: string, encrypted: EncryptedSafepayPayload): void {
+  try {
+    let data: Record<string, any> = {};
+    if (fs.existsSync(VAULT_FILE_PATH)) {
+      try {
+        data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
+      } catch {}
+    }
+    data[storeId] = encrypted;
+    fs.writeFileSync(VAULT_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[SafepayVault] Notice: could not write to local vault file:', err);
+  }
+}
+
+function loadFromLocalVaultFile(storeId: string): EncryptedSafepayPayload | null {
+  try {
+    if (fs.existsSync(VAULT_FILE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
+      return data[storeId] || null;
+    }
+  } catch (err) {
+    console.warn('[SafepayVault] Notice: could not read from local vault file:', err);
+  }
+  return null;
+}
+
+function removeFromLocalVaultFile(storeId: string): void {
+  try {
+    if (fs.existsSync(VAULT_FILE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
+      delete data[storeId];
+      fs.writeFileSync(VAULT_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
+    }
+  } catch {}
+}
 
 // Diagnostic state for encryption vault health
 let lastVaultDiagnostic: VaultDiagnostic = {
@@ -196,6 +237,17 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     }
 
     if (!encryptedData) {
+      // Check local encrypted vault file backup
+      const localEncrypted = loadFromLocalVaultFile(storeId);
+      if (localEncrypted) {
+        encryptedData = localEncrypted;
+      }
+    }
+
+    if (!encryptedData) {
+      if (cached && (cached.creds.apiKey || cached.creds.secretKey || cached.creds.webhookSecret)) {
+        return cached.creds;
+      }
       lastVaultDiagnostic = {
         status: 'not_configured',
         message: 'No Safepay credentials configured in vault yet.',
@@ -253,6 +305,7 @@ function isValidHttpHeaderValue(val: string): boolean {
  */
 export async function clearSafepayCredentials(storeId: string = 'default'): Promise<void> {
   credentialsCache.delete(storeId);
+  removeFromLocalVaultFile(storeId);
   const supabase = getAdminSupabase();
   try {
     await supabase
@@ -363,6 +416,9 @@ export async function saveSafepayCredentials(
 
   // Always update in-memory cache so credentials take effect immediately
   credentialsCache.set(storeId, { creds: updated, cachedAt: Date.now() });
+
+  // Always save encrypted payload to local vault file as durable backup
+  saveToLocalVaultFile(storeId, encrypted);
 
   if (savedToDb) {
     lastVaultDiagnostic = {
@@ -980,18 +1036,20 @@ export async function processVerifiedWebhook(
 
 /**
  * Diagnostic Safepay API connection test.
- * Tests authentication against Safepay's APIs (order/v1/init for Public Key and passport/v1/token for Secret Key).
+ * Tests authentication against Safepay's official APIs (order/v1/init for Public Key and passport/v1/token for Secret Key).
+ * Accurately notes that webhook shared secrets can only be verified on incoming webhook deliveries.
  */
 export async function testSafepayConnection(
   storeId: string = 'default',
-  options?: { apiKey?: string; secretKey?: string; environment?: 'sandbox' | 'production' }
+  options?: { apiKey?: string; secretKey?: string; webhookSecret?: string; environment?: 'sandbox' | 'production' }
 ): Promise<{ success: boolean; message: string }> {
   const creds = await getSafepayCredentials(storeId);
   const targetKey = sanitizeKeyInput(options?.apiKey, creds.apiKey);
   const targetSecretKey = sanitizeKeyInput(options?.secretKey, creds.secretKey);
+  const targetWebhookSecret = sanitizeKeyInput(options?.webhookSecret, creds.webhookSecret);
   const targetEnv = options?.environment || creds.environment || 'sandbox';
 
-  if (!targetKey && !targetSecretKey) {
+  if (!targetKey && !targetSecretKey && !targetWebhookSecret) {
     return {
       success: false,
       message: 'No Safepay keys provided or saved yet. Please enter your Public Key and/or Secret Key from Developer > APIs.',
@@ -1004,11 +1062,14 @@ export async function testSafepayConnection(
       : 'https://sandbox.api.getsafepay.com';
 
   const results: string[] = [];
-  let isAnyValid = false;
+  let testedCount = 0;
+  let hasFailure = false;
 
   // 1. If a Public Key is provided, validate it against Safepay's official order initialization API
   if (targetKey) {
+    testedCount++;
     if (targetKey.includes('•') || targetKey.length < 5) {
+      hasFailure = true;
       results.push('✗ Public Key appears to be incomplete or contains placeholder dots.');
     } else {
       try {
@@ -1025,42 +1086,17 @@ export async function testSafepayConnection(
 
         const orderData = await orderInitRes.json().catch(() => ({}));
         if (orderInitRes.ok && (orderData.status?.message === 'success' || orderData.data?.token)) {
-          isAnyValid = true;
-          results.push(`✓ Public Key verified successfully with Safepay ${targetEnv.toUpperCase()} order engine.`);
+          results.push(`✓ Public Key verified successfully with Safepay ${targetEnv.toUpperCase()} API.`);
         } else {
-          // Check if the user mistakenly put their Secret Key in the Public Key field!
-          let isSecretKeyInWrongField = false;
-          if (isValidHttpHeaderValue(targetKey)) {
-            try {
-              const secretCheckRes = await fetch(`${baseUrl}/client/passport/v1/token`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'X-SFPY-MERCHANT-SECRET': targetKey,
-                },
-              });
-              const sData = await secretCheckRes.json().catch(() => ({}));
-              if (secretCheckRes.ok && (Boolean(sData.data) || sData.status?.message === 'success')) {
-                isSecretKeyInWrongField = true;
-              }
-            } catch {
-              // ignore
-            }
-          }
-
-          if (isSecretKeyInWrongField) {
-            results.push(
-              `⚠ The key entered in "Public Key" is actually your Merchant Secret Key! Please move it to the "Secret Key" field and put your Public Key (starts with sec_... / pub_...) in the Public Key field.`
-            );
-          } else {
-            const errorMsg =
-              orderData.status?.errors?.[0] ||
-              orderData.message ||
-              `Rejected with status ${orderInitRes.status}`;
-            results.push(`✗ Public Key was rejected by Safepay (${errorMsg}). Double-check your Public Key in Safepay Developer > APIs.`);
-          }
+          hasFailure = true;
+          const errorMsg =
+            orderData.status?.errors?.[0] ||
+            orderData.message ||
+            `Rejected with status ${orderInitRes.status}`;
+          results.push(`✗ Public Key rejected by Safepay (${errorMsg}). Please check your Public Key in Safepay Developer > APIs.`);
         }
       } catch (err: any) {
+        hasFailure = true;
         results.push(`✗ Public Key check network error: ${err.message}`);
       }
     }
@@ -1068,8 +1104,10 @@ export async function testSafepayConnection(
 
   // 2. If a Secret Key is provided, validate it against Safepay's Passport API
   if (targetSecretKey) {
+    testedCount++;
     if (!isValidHttpHeaderValue(targetSecretKey) || targetSecretKey.includes('•') || targetSecretKey.length < 5) {
-      results.push('✗ Secret Key contains invalid characters or placeholder dots. Please re-enter your actual Secret Key from Safepay Developer > APIs.');
+      hasFailure = true;
+      results.push('✗ Secret Key contains invalid characters or placeholder dots. Please re-enter your Secret Key from Safepay Developer > APIs.');
     } else {
       try {
         const passportRes = await fetch(`${baseUrl}/client/passport/v1/token`, {
@@ -1082,23 +1120,31 @@ export async function testSafepayConnection(
 
         const passData = await passportRes.json().catch(() => ({}));
         if (passportRes.ok && (Boolean(passData.data) || passData.status?.message === 'success' || Boolean(passData.token))) {
-          isAnyValid = true;
           results.push(`✓ Secret Key verified successfully with Safepay ${targetEnv.toUpperCase()} Passport API.`);
         } else {
+          hasFailure = true;
           const errorMsg =
             passData.status?.errors?.[0] ||
             passData.message ||
             `Rejected with status ${passportRes.status}`;
-          results.push(`✗ Secret Key was rejected by Safepay (${errorMsg}). Double-check your Secret Key in Safepay Developer > APIs.`);
+          results.push(`✗ Secret Key rejected by Safepay (${errorMsg}). Please check your Secret Key in Safepay Developer > APIs.`);
         }
       } catch (err: any) {
+        hasFailure = true;
         results.push(`✗ Secret Key check network error: ${err.message}`);
       }
     }
   }
 
+  // 3. Webhook Shared Secret reporting
+  if (targetWebhookSecret) {
+    results.push('ℹ Webhook Shared Secret: Saved on server. (Note: Safepay does not provide a remote API to test shared secrets; it is verified cryptographically via HMAC-SHA256 when Safepay delivers incoming webhooks).');
+  }
+
+  const isSuccess = testedCount > 0 && !hasFailure;
+
   return {
-    success: isAnyValid,
+    success: isSuccess,
     message: results.join('\n'),
   };
 }

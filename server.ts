@@ -212,8 +212,8 @@ async function startServer() {
    */
   app.post('/api/safepay/test-connection', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', apiKey, secretKey, environment } = req.body || {};
-      const result = await testSafepayConnection(storeId, { apiKey, secretKey, environment });
+      const { storeId = 'default', apiKey, secretKey, webhookSecret, environment } = req.body || {};
+      const result = await testSafepayConnection(storeId, { apiKey, secretKey, webhookSecret, environment });
       res.json(result);
     } catch (err: any) {
       res.status(200).json({ success: false, message: `Connection test error: ${err.message || 'Unknown error'}` });

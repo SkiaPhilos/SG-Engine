@@ -75,8 +75,39 @@ export const SafepayGatewayManager: React.FC = () => {
   };
 
   useEffect(() => {
+    try {
+      const savedDraft = localStorage.getItem(`safepay_keys_draft_${storeId}`);
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (parsed.apiKey) setApiKeyInput(parsed.apiKey);
+        if (parsed.secretKey) setSecretKeyInput(parsed.secretKey);
+        if (parsed.webhookSecret) setWebhookSecretInput(parsed.webhookSecret);
+      }
+    } catch {}
     loadStatus();
   }, [storeId]);
+
+  const updateDraft = (patch: { apiKey?: string; secretKey?: string; webhookSecret?: string }) => {
+    try {
+      const current = JSON.parse(localStorage.getItem(`safepay_keys_draft_${storeId}`) || '{}');
+      localStorage.setItem(`safepay_keys_draft_${storeId}`, JSON.stringify({ ...current, ...patch }));
+    } catch {}
+  };
+
+  const handleApiKeyChange = (val: string) => {
+    setApiKeyInput(val);
+    updateDraft({ apiKey: val });
+  };
+
+  const handleSecretKeyChange = (val: string) => {
+    setSecretKeyInput(val);
+    updateDraft({ secretKey: val });
+  };
+
+  const handleWebhookSecretChange = (val: string) => {
+    setWebhookSecretInput(val);
+    updateDraft({ webhookSecret: val });
+  };
 
   const handleCopyWebhook = () => {
     const url = status?.webhookUrl || `${window.location.origin}/api/safepay/webhook`;
@@ -98,6 +129,9 @@ export const SafepayGatewayManager: React.FC = () => {
       setApiKeyInput('');
       setSecretKeyInput('');
       setWebhookSecretInput('');
+      try {
+        localStorage.removeItem(`safepay_keys_draft_${storeId}`);
+      } catch {}
       setEnabled(false);
       setTestResult({
         success: true,
@@ -118,7 +152,7 @@ export const SafepayGatewayManager: React.FC = () => {
     setTestResult(null);
 
     if (apiKeyInput.includes('•') || secretKeyInput.includes('•') || webhookSecretInput.includes('•')) {
-      setSaveError('Please do not submit placeholder bullets (•). Paste your actual key strings starting with sec_ or pub_ from your Safepay dashboard.');
+      setSaveError('Please do not submit placeholder bullets (•). Paste your actual key strings from your Safepay dashboard.');
       setSaving(false);
       return;
     }
@@ -134,9 +168,13 @@ export const SafepayGatewayManager: React.FC = () => {
       });
 
       setStatus(updatedStatus);
-      setApiKeyInput('');
-      setSecretKeyInput('');
-      setWebhookSecretInput('');
+      try {
+        localStorage.setItem(`safepay_keys_draft_${storeId}`, JSON.stringify({
+          apiKey: apiKeyInput.trim(),
+          secretKey: secretKeyInput.trim(),
+          webhookSecret: webhookSecretInput.trim(),
+        }));
+      } catch {}
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
     } catch (err: any) {
@@ -153,6 +191,7 @@ export const SafepayGatewayManager: React.FC = () => {
       const res = await testSafepayConnection(storeId, {
         apiKey: apiKeyInput.trim() || undefined,
         secretKey: secretKeyInput.trim() || undefined,
+        webhookSecret: webhookSecretInput.trim() || undefined,
         environment,
       });
       setTestResult(res);
@@ -524,8 +563,8 @@ export const SafepayGatewayManager: React.FC = () => {
               <input
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKeyInput}
-                onChange={e => setApiKeyInput(e.target.value)}
-                placeholder={status?.hasApiKey ? 'Enter new Public Key to replace existing' : 'e.g. sec_... (from Developer > APIs > Public Key)'}
+                onChange={e => handleApiKeyChange(e.target.value)}
+                placeholder="Paste Public Key (from Safepay Developer > APIs)"
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -544,26 +583,6 @@ export const SafepayGatewayManager: React.FC = () => {
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
               Copy the <strong>Public Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
             </p>
-            {apiKeyInput.length > 0 && (
-              <div className="flex items-center gap-1.5 text-[11px] pt-0.5">
-                {apiKeyInput.includes('•') ? (
-                  <span className="text-red-500 font-semibold flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    Placeholder bullets detected. Please paste your actual Public Key from Safepay.
-                  </span>
-                ) : apiKeyInput.startsWith('sec_') || apiKeyInput.startsWith('pub_') ? (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    Recognized Safepay key format ({apiKeyInput.length} chars)
-                  </span>
-                ) : (
-                  <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                    Format note: Safepay Public Keys usually start with sec_ or pub_.
-                  </span>
-                )}
-              </div>
-            )}
           </div>
 
           {/* 2. Secret Key */}
@@ -583,8 +602,8 @@ export const SafepayGatewayManager: React.FC = () => {
               <input
                 type={showSecretKey ? 'text' : 'password'}
                 value={secretKeyInput}
-                onChange={e => setSecretKeyInput(e.target.value)}
-                placeholder={status?.hasSecretKey ? 'Enter new Secret Key to replace existing' : 'e.g. 0bd6f... (64-character hex key from Developer > APIs > Secret Key)'}
+                onChange={e => handleSecretKeyChange(e.target.value)}
+                placeholder="Paste Secret Key (from Safepay Developer > APIs)"
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -601,37 +620,8 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Copy the <strong>Secret Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs (it is a 64-character hexadecimal key used to sign all transactions).
+              Copy the <strong>Secret Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
             </p>
-            {secretKeyInput.length > 0 && (
-              <div className="flex items-center gap-1.5 text-[11px] pt-0.5">
-                {secretKeyInput.includes('•') ? (
-                  <span className="text-red-500 font-semibold flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    Placeholder bullets detected. Please paste your actual Secret Key from Safepay.
-                  </span>
-                ) : /^[0-9a-fA-F]{64}$/.test(secretKeyInput.trim()) ? (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    ✓ Valid Safepay 64-character hex Secret Key recognized
-                  </span>
-                ) : /^[0-9a-fA-F]{32,63}$/.test(secretKeyInput.trim()) ? (
-                  <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                    Hex key entered ({secretKeyInput.trim().length}/64 characters). Make sure you copied the entire key.
-                  </span>
-                ) : secretKeyInput.startsWith('sec_') ? (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    Recognized key format ({secretKeyInput.length} chars)
-                  </span>
-                ) : (
-                  <span className="text-neutral-500 flex items-center gap-1">
-                    Key entered ({secretKeyInput.length} characters)
-                  </span>
-                )}
-              </div>
-            )}
           </div>
 
           {/* 3. Webhook Secret (Write-Only) */}
@@ -651,8 +641,8 @@ export const SafepayGatewayManager: React.FC = () => {
               <input
                 type={showWebhookSecret ? 'text' : 'password'}
                 value={webhookSecretInput}
-                onChange={e => setWebhookSecretInput(e.target.value)}
-                placeholder={status?.hasWebhookSecret ? 'Enter new Shared Secret to replace existing' : 'e.g. whsec_... (from Developer > Endpoints)'}
+                onChange={e => handleWebhookSecretChange(e.target.value)}
+                placeholder="Paste Shared Secret (from Safepay Developer > Endpoints)"
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -671,25 +661,6 @@ export const SafepayGatewayManager: React.FC = () => {
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
               Copy the <strong>Shared Webhook Secret</strong> from Safepay Dashboard &gt; Developer &gt; Endpoints (Webhooks).
             </p>
-            {webhookSecretInput.length > 0 && (
-              <div className="flex items-center gap-1.5 text-[11px] pt-0.5">
-                {webhookSecretInput.includes('•') ? (
-                  <span className="text-red-500 font-semibold flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    Placeholder bullets detected. Please paste your actual Shared Secret.
-                  </span>
-                ) : webhookSecretInput.startsWith('whsec_') ? (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    Recognized Shared Secret format ({webhookSecretInput.length} chars)
-                  </span>
-                ) : (
-                  <span className="text-neutral-500 flex items-center gap-1">
-                    Key length: {webhookSecretInput.length} characters
-                  </span>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Diagnostic Connection Test Button */}
