@@ -55,7 +55,7 @@ async function startServer() {
    */
   app.post('/api/safepay/create-tracker', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', orderId, redirectUrl, cancelUrl } = req.body;
+      const { storeId = 'default', orderId, redirectUrl, cancelUrl, orderData } = req.body;
 
       if (!orderId) {
         return res.status(400).json({ error: 'Missing required orderId' });
@@ -73,6 +73,7 @@ async function startServer() {
         orderId,
         redirectUrl: finalRedirectUrl,
         cancelUrl: finalCancelUrl,
+        orderData,
       });
 
       res.json(result);

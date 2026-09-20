@@ -74,6 +74,11 @@ export async function createSafepayTracker(params: {
   orderId: string;
   redirectUrl?: string;
   cancelUrl?: string;
+  orderData?: {
+    total: number;
+    orderNumber?: string;
+    customer?: any;
+  };
 }): Promise<SafepayTrackerResponse> {
   const res = await fetch('/api/safepay/create-tracker', {
     method: 'POST',
@@ -123,8 +128,8 @@ export async function configureSafepay(params: {
   apiKey?: string;
   secretKey?: string;
   webhookSecret?: string;
-  environment: 'sandbox' | 'production';
-  enabled: boolean;
+  environment?: 'sandbox' | 'production';
+  enabled?: boolean;
 }): Promise<SafepayStatusResponse> {
   const res = await fetch('/api/safepay/configure', {
     method: 'POST',

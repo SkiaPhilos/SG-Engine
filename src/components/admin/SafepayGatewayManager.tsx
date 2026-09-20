@@ -65,8 +65,27 @@ export const SafepayGatewayManager: React.FC = () => {
     try {
       const data = await getSafepayStatus(storeId);
       setStatus(data);
-      setEnabled(data.enabled);
-      setEnvironment(data.environment);
+      if (data) {
+        // Read draft to preserve toggle if server status is pending initial credentials
+        let draftEnabled: boolean | undefined = undefined;
+        try {
+          const savedDraft = localStorage.getItem(`safepay_keys_draft_${storeId}`);
+          if (savedDraft) {
+            const parsed = JSON.parse(savedDraft);
+            if (typeof parsed.enabled === 'boolean') draftEnabled = parsed.enabled;
+          }
+        } catch {}
+
+        if (draftEnabled !== undefined) {
+          setEnabled(draftEnabled);
+        } else {
+          setEnabled(Boolean(data.enabled));
+        }
+
+        if (data.environment) {
+          setEnvironment(data.environment);
+        }
+      }
     } catch (err) {
       console.error('Failed to load Safepay status:', err);
     } finally {
@@ -82,16 +101,44 @@ export const SafepayGatewayManager: React.FC = () => {
         if (parsed.apiKey) setApiKeyInput(parsed.apiKey);
         if (parsed.secretKey) setSecretKeyInput(parsed.secretKey);
         if (parsed.webhookSecret) setWebhookSecretInput(parsed.webhookSecret);
+        if (typeof parsed.enabled === 'boolean') setEnabled(parsed.enabled);
+        if (parsed.environment) setEnvironment(parsed.environment);
       }
     } catch {}
     loadStatus();
   }, [storeId]);
 
-  const updateDraft = (patch: { apiKey?: string; secretKey?: string; webhookSecret?: string }) => {
+  const updateDraft = (patch: {
+    apiKey?: string;
+    secretKey?: string;
+    webhookSecret?: string;
+    enabled?: boolean;
+    environment?: 'sandbox' | 'production';
+  }) => {
     try {
       const current = JSON.parse(localStorage.getItem(`safepay_keys_draft_${storeId}`) || '{}');
       localStorage.setItem(`safepay_keys_draft_${storeId}`, JSON.stringify({ ...current, ...patch }));
     } catch {}
+  };
+
+  const handleToggleEnable = async (newEnabled: boolean) => {
+    setEnabled(newEnabled);
+    updateDraft({ enabled: newEnabled });
+    try {
+      const updatedStatus = await configureSafepay({
+        storeId,
+        enabled: newEnabled,
+        environment,
+      });
+      setStatus(updatedStatus);
+    } catch (err) {
+      console.warn('Auto-persisting Safepay toggle note:', err);
+    }
+  };
+
+  const handleEnvironmentChange = (newEnv: 'sandbox' | 'production') => {
+    setEnvironment(newEnv);
+    updateDraft({ environment: newEnv });
   };
 
   const handleApiKeyChange = (val: string) => {
@@ -173,6 +220,8 @@ export const SafepayGatewayManager: React.FC = () => {
           apiKey: apiKeyInput.trim(),
           secretKey: secretKeyInput.trim(),
           webhookSecret: webhookSecretInput.trim(),
+          enabled,
+          environment,
         }));
       } catch {}
       setSavedSuccess(true);
@@ -317,7 +366,7 @@ export const SafepayGatewayManager: React.FC = () => {
               <input
                 type="checkbox"
                 checked={enabled}
-                onChange={e => setEnabled(e.target.checked)}
+                onChange={e => handleToggleEnable(e.target.checked)}
                 className="sr-only peer"
               />
               <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
@@ -332,7 +381,7 @@ export const SafepayGatewayManager: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => setEnvironment('sandbox')}
+                onClick={() => handleEnvironmentChange('sandbox')}
                 className={`p-3.5 rounded-xl border text-left transition-all ${
                   environment === 'sandbox' ? 'ring-2' : 'hover:border-neutral-400'
                 }`}
@@ -356,7 +405,7 @@ export const SafepayGatewayManager: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => setEnvironment('production')}
+                onClick={() => handleEnvironmentChange('production')}
                 className={`p-3.5 rounded-xl border text-left transition-all ${
                   environment === 'production' ? 'ring-2' : 'hover:border-neutral-400'
                 }`}

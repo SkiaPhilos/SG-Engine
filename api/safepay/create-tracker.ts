@@ -31,7 +31,7 @@ export default async function handler(req: any, res: any) {
       body = {};
     }
 
-    const { storeId = 'default', orderId, redirectUrl, cancelUrl } = body;
+    const { storeId = 'default', orderId, redirectUrl, cancelUrl, orderData } = body;
 
     if (!orderId) {
       return res.status(400).json({ error: 'Missing required orderId' });
@@ -49,6 +49,7 @@ export default async function handler(req: any, res: any) {
       orderId,
       redirectUrl: finalRedirectUrl,
       cancelUrl: finalCancelUrl,
+      orderData,
     });
 
     return res.status(200).json(result);

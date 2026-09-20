@@ -393,7 +393,7 @@ export async function getSafepayStatus(storeId: string = 'default', baseUrl: str
 
   return {
     configured: hasApiKey && hasWebhookSecret,
-    enabled: creds.enabled && hasApiKey,
+    enabled: Boolean(creds.enabled),
     environment: creds.environment,
     hasApiKey,
     hasSecretKey,
@@ -503,11 +503,31 @@ export async function initSafepayTracker(params: {
   orderId: string;
   redirectUrl: string;
   cancelUrl: string;
+  orderData?: {
+    total: number;
+    orderNumber?: string;
+    customer?: any;
+  };
 }): Promise<{ checkoutUrl: string; tracker: string }> {
-  const { storeId, orderId, redirectUrl, cancelUrl } = params;
+  const { storeId, orderId, redirectUrl, cancelUrl, orderData } = params;
 
-  // 1. Authoritative order retrieval
-  const order = await fetchOrder(storeId, orderId);
+  // 1. Authoritative order retrieval with fallback
+  let order: any = null;
+  try {
+    order = await fetchOrder(storeId, orderId);
+  } catch (fetchErr) {
+    if (orderData && orderData.total > 0) {
+      order = {
+        id: orderId,
+        orderNumber: orderData.orderNumber || `SE-${orderId.slice(-6)}`,
+        total: orderData.total,
+        customer: orderData.customer || {},
+      };
+    } else {
+      throw fetchErr;
+    }
+  }
+
   if (!order || order.total <= 0) {
     throw new Error('Order not found or invalid order total');
   }
