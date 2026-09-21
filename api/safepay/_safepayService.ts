@@ -7,6 +7,7 @@ export interface SafepayCredentials {
   webhookSecret: string; // Shared Webhook Secret (from Developer > Endpoints)
   environment: 'sandbox' | 'production';
   enabled: boolean;
+  autoConfirmOnPayment?: boolean; // Default true: automatically confirm order upon paid webhook
 }
 
 export interface VaultDiagnostic {
@@ -21,6 +22,7 @@ export interface SafepayStatusResponse {
   configured: boolean;
   enabled: boolean;
   environment: 'sandbox' | 'production';
+  autoConfirmOnPayment?: boolean;
   hasApiKey: boolean;
   hasSecretKey: boolean;
   hasWebhookSecret: boolean;
@@ -289,6 +291,7 @@ export async function saveSafepayCredentials(
     webhookSecret?: string;
     environment?: 'sandbox' | 'production';
     enabled?: boolean;
+    autoConfirmOnPayment?: boolean;
   }
 ): Promise<void> {
   const key = getMasterEncryptionKey();
@@ -300,6 +303,12 @@ export async function saveSafepayCredentials(
     webhookSecret: sanitizeKeyInput(params.webhookSecret, existing.webhookSecret),
     environment: params.environment || existing.environment,
     enabled: params.enabled !== undefined ? params.enabled : existing.enabled,
+    autoConfirmOnPayment:
+      params.autoConfirmOnPayment !== undefined
+        ? params.autoConfirmOnPayment
+        : existing.autoConfirmOnPayment !== undefined
+        ? existing.autoConfirmOnPayment
+        : true,
   };
 
   const encrypted = encryptPayload(updated, key);
@@ -395,6 +404,7 @@ export async function getSafepayStatus(storeId: string = 'default', baseUrl: str
     configured: hasApiKey && hasWebhookSecret,
     enabled: Boolean(creds.enabled),
     environment: creds.environment,
+    autoConfirmOnPayment: creds.autoConfirmOnPayment !== false,
     hasApiKey,
     hasSecretKey,
     hasWebhookSecret,
@@ -459,7 +469,20 @@ export async function updateOrder(
     .eq('store_id', storeId);
 
   if (error) {
-    console.error('updateOrder error:', error.message);
+    console.warn('updateOrder primary warning:', error.message);
+    // If the database column safepay_tracker is typed as UUID or causes a syntax error, retry without it
+    if (dbUpdates.safepay_tracker && (error.message.includes('uuid') || error.message.includes('safepay_tracker'))) {
+      const fallbackUpdates = { ...dbUpdates };
+      delete fallbackUpdates.safepay_tracker;
+      const { error: retryError } = await supabase
+        .from('orders')
+        .update(fallbackUpdates)
+        .eq('id', orderId)
+        .eq('store_id', storeId);
+      if (!retryError) {
+        return;
+      }
+    }
     throw error;
   }
 }
@@ -569,11 +592,23 @@ export async function initSafepayTracker(params: {
     },
   };
 
-  if (order.customer?.phone) {
+  const cleanedPhone = (order.customer?.phone || '').replace(/[^0-9+]/g, '');
+  if (cleanedPhone) {
+    let formattedPhone = cleanedPhone;
+    if (formattedPhone.startsWith('03')) {
+      formattedPhone = '+92' + formattedPhone.substring(1);
+    } else if (!formattedPhone.startsWith('+') && formattedPhone.startsWith('92')) {
+      formattedPhone = '+' + formattedPhone;
+    }
     initBody.customer = {
       first_name: firstName,
-      last_name: lastName,
-      phone: order.customer.phone,
+      last_name: lastName || undefined,
+      phone: formattedPhone,
+    };
+  } else {
+    initBody.customer = {
+      first_name: firstName,
+      last_name: lastName || undefined,
     };
   }
 
@@ -586,7 +621,15 @@ export async function initSafepayTracker(params: {
   if (!initRes.ok) {
     const errText = await initRes.text();
     console.error('Safepay order/v1/init failed:', errText);
-    throw new Error(`Safepay initialization failed (${initRes.status})`);
+    let detail = '';
+    try {
+      const errJson = JSON.parse(errText);
+      detail = errJson.status?.message || errJson.message || errJson.error || '';
+      if (errJson.status?.errors?.length) {
+        detail += ` (${errJson.status.errors.join(', ')})`;
+      }
+    } catch {}
+    throw new Error(detail ? `Payment gateway: ${detail}` : `Payment gateway initialization failed (${initRes.status})`);
   }
 
   const initData = await initRes.json();
@@ -633,11 +676,20 @@ export async function initSafepayTracker(params: {
 
   const checkoutUrl = checkoutUrlObj.toString();
 
-  // 6. Step D: Save tracker to database order
-  await updateOrder(storeId, orderId, {
-    safepayTracker: trackerToken,
-    paymentStatus: 'pending_verification',
-  });
+  // 6. Step D: Save tracker to database order (best-effort, do not block checkout redirect)
+  try {
+    await updateOrder(storeId, orderId, {
+      safepayTracker: trackerToken,
+      paymentStatus: 'pending_verification',
+    });
+  } catch (err: any) {
+    console.warn('[SafepayTracker] Non-fatal: could not attach tracker to order DB row (proceeding with checkout):', err?.message || err);
+    try {
+      await updateOrder(storeId, orderId, {
+        paymentStatus: 'pending_verification',
+      });
+    } catch {}
+  }
 
   return { checkoutUrl, tracker: trackerToken };
 }
@@ -927,10 +979,14 @@ export async function processVerifiedWebhook(
 
   // Handle Payment Succeeded
   try {
-    // 2. Update order status to paid
+    // 2. Determine whether store owner enables auto-confirmation or requires manual review
+    const creds = await getSafepayCredentials(storeId);
+    const orderStatusToSet = creds.autoConfirmOnPayment !== false ? 'confirmed' : 'pending';
+
+    // Update order status to paid
     await updateOrder(storeId, targetOrderId, {
       paymentStatus: 'paid',
-      orderStatus: 'confirmed',
+      orderStatus: orderStatusToSet,
       safepaySignatureVerified: true,
       safepayPaidAt: new Date().toISOString(),
     });

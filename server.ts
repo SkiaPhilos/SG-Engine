@@ -166,7 +166,7 @@ async function startServer() {
    */
   app.post('/api/safepay/configure', async (req: Request, res: Response) => {
     try {
-      const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled } = req.body || {};
+      const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled, autoConfirmOnPayment } = req.body || {};
 
       await saveSafepayCredentials(storeId, {
         apiKey,
@@ -174,6 +174,7 @@ async function startServer() {
         webhookSecret,
         environment,
         enabled,
+        autoConfirmOnPayment,
       });
 
       const host = req.get('host') || 'localhost:3000';

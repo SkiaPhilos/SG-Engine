@@ -12,6 +12,7 @@ export interface SafepayStatusResponse {
   configured: boolean;
   enabled: boolean;
   environment: 'sandbox' | 'production';
+  autoConfirmOnPayment?: boolean;
   hasApiKey: boolean;
   hasSecretKey?: boolean;
   hasWebhookSecret: boolean;
@@ -130,6 +131,7 @@ export async function configureSafepay(params: {
   webhookSecret?: string;
   environment?: 'sandbox' | 'production';
   enabled?: boolean;
+  autoConfirmOnPayment?: boolean;
 }): Promise<SafepayStatusResponse> {
   const res = await fetch('/api/safepay/configure', {
     method: 'POST',

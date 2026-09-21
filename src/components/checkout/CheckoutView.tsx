@@ -54,45 +54,27 @@ export const CheckoutView: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
 
-    // Check draft cache first for immediate UI responsiveness
-    let draftEnabled = false;
-    try {
-      const draft = localStorage.getItem(`safepay_keys_draft_${storeId}`);
-      if (draft) {
-        const parsed = JSON.parse(draft);
-        if (parsed.enabled) {
-          draftEnabled = true;
-          setPaymentRail('safepay');
-          setSafepayStatus(prev => prev || {
-            configured: Boolean(parsed.apiKey && parsed.webhookSecret),
-            enabled: true,
-            environment: parsed.environment || 'sandbox',
-            hasApiKey: Boolean(parsed.apiKey),
-            hasWebhookSecret: Boolean(parsed.webhookSecret),
-            webhookUrl: `${window.location.origin}/api/safepay/webhook`,
-          });
-        }
-      }
-    } catch {}
-
     getSafepayStatus(storeId).then(status => {
       if (!isMounted) return;
-      const effectiveEnabled = status.enabled || draftEnabled;
+      const isOnlineAvailable = Boolean(status?.enabled && status?.hasApiKey);
       setSafepayStatus({
         ...status,
-        enabled: effectiveEnabled,
+        enabled: isOnlineAvailable,
       });
 
-      if (effectiveEnabled && (activeMethods.length === 0 || draftEnabled)) {
+      if (isOnlineAvailable) {
         setPaymentRail('safepay');
-      } else if (!effectiveEnabled && activeMethods.length > 0) {
+      } else {
         setPaymentRail('manual');
       }
     }).catch(err => {
-      console.warn('Safepay status query note:', err);
+      console.warn('Payment status query note:', err);
+      if (isMounted) {
+        setPaymentRail('manual');
+      }
     });
 
-    // Check if customer was redirected back after cancelling Safepay checkout
+    // Check if customer was redirected back after cancelling checkout
     try {
       const url = new URL(window.location.href);
       const searchParams = new URLSearchParams(url.search || (url.hash.includes('?') ? url.hash.split('?')[1] : ''));
@@ -100,7 +82,7 @@ export const CheckoutView: React.FC = () => {
         const cancelledOrderId = searchParams.get('orderId');
         if (cancelledOrderId) {
           releaseInventoryHold(undefined, cancelledOrderId);
-          setErrorMessage('Safepay checkout was cancelled. Reserved items have been released.');
+          setErrorMessage('Payment was cancelled. Reserved items have been released.');
         }
       }
     } catch {
@@ -110,7 +92,7 @@ export const CheckoutView: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [storeId, activeMethods.length]);
+  }, [storeId]);
 
   // Form State
   const [customer, setCustomer] = useState<CustomerDetails>({
@@ -217,14 +199,14 @@ export const CheckoutView: React.FC = () => {
           discountTotal: pricing.discountTotal,
           deliveryFee: pricing.deliveryFee,
           total: pricing.total,
-          paymentMethodId: 'safepay',
-          paymentMethodName: 'Safepay Online Checkout',
+          paymentMethodId: 'online_gateway',
+          paymentMethodName: 'Online Payment (Card / Digital Wallet)',
           paymentStatus: 'pending_verification',
           orderStatus: 'pending',
           inventoryHoldId: hold.holdId,
         });
 
-        // Initialize Safepay tracker session via server proxy
+        // Initialize online payment tracker session via server proxy
         const host = window.location.origin;
         const redirectUrl = `${host}/#order_confirmation?orderId=${orderId}`;
         const cancelUrl = `${host}/#checkout?orderId=${orderId}&cancelled=true`;
@@ -244,7 +226,7 @@ export const CheckoutView: React.FC = () => {
         setActiveOrderId(orderId);
         clearCart();
 
-        // Redirect to official Safepay hosted checkout
+        // Redirect to secure hosted checkout
         if (trackerRes?.checkoutUrl) {
           window.location.href = trackerRes.checkoutUrl;
         } else {
@@ -482,12 +464,12 @@ export const CheckoutView: React.FC = () => {
                 </h2>
                 {safepayStatus?.enabled && activeMethods.length > 0 && (
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                    Multiple Options Available
+                    Choose Method
                   </span>
                 )}
               </div>
 
-              {/* Both Rails Available: Let Customer Choose Safepay vs Direct Transfer */}
+              {/* Both Rails Available: Let Customer Choose Online vs Manual Direct Transfer */}
               {safepayStatus?.enabled && activeMethods.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-1">
                   <button
@@ -504,14 +486,14 @@ export const CheckoutView: React.FC = () => {
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-bold flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
                         <Zap className="w-3.5 h-3.5 fill-emerald-500 text-emerald-500" />
-                        Safepay Online Checkout
+                        Pay Online (Instant)
                       </span>
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
-                        Instant
+                        Card / Wallets
                       </span>
                     </div>
                     <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
-                      Instant payment with Visa, Mastercard, PayPak &amp; mobile wallets.
+                      Visa, Mastercard, PayPak debit card, or mobile wallets with instant confirmation.
                     </p>
                   </button>
 
@@ -532,7 +514,7 @@ export const CheckoutView: React.FC = () => {
                       </span>
                     </div>
                     <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
-                      Transfer directly to store accounts (JazzCash, Easypaisa, Raast, Bank) &amp; share TID.
+                      Transfer directly via JazzCash, Easypaisa, Raast, or Bank &amp; share proof.
                     </p>
                   </button>
                 </div>
@@ -544,8 +526,8 @@ export const CheckoutView: React.FC = () => {
                   <AlertCircle className="w-4 h-4 flex-shrink-0 text-neutral-500" />
                   <span>Payment methods not available.</span>
                 </div>
-              ) : paymentRail === 'safepay' || (safepayStatus?.enabled && activeMethods.length === 0) ? (
-                /* Safepay Payment Rail Card */
+              ) : paymentRail === 'safepay' && safepayStatus?.enabled ? (
+                /* Online Payment Rail Card */
                 <div
                   className="p-5 rounded-xl border space-y-4"
                   style={{
@@ -557,15 +539,12 @@ export const CheckoutView: React.FC = () => {
                     <div>
                       <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-600 flex items-center gap-1.5">
                         <Zap className="w-4 h-4 text-emerald-600" />
-                        Safepay Secure Hosted Checkout
+                        Online Checkout
                       </span>
                       <p className="text-xs mt-1" style={{ color: themeColors.muted }}>
-                        Official hosted checkout with instant cryptographic payment verification.
+                        Instant, encrypted checkout. No manual receipt upload required.
                       </p>
                     </div>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 uppercase">
-                      {safepayStatus?.environment || 'sandbox'}
-                    </span>
                   </div>
 
                   <div className="flex flex-wrap gap-2 pt-1">
@@ -576,14 +555,14 @@ export const CheckoutView: React.FC = () => {
                       🇵🇰 PayPak Debit
                     </span>
                     <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
-                      📱 JazzCash &amp; Easypaisa
+                      📱 Digital Wallets
                     </span>
                   </div>
 
                   <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-200 text-xs flex items-start gap-2.5">
                     <ShieldCheck className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-600" />
                     <span className="leading-relaxed">
-                      You do not need to manually transfer or upload receipts. When you submit your order, you will be redirected to Safepay's secure checkout page to complete your payment.
+                      When you submit your order, you will be securely redirected to the payment page to complete your payment.
                     </span>
                   </div>
                 </div>
@@ -852,26 +831,26 @@ export const CheckoutView: React.FC = () => {
                 <span>
                   {isSubmitting
                     ? paymentRail === 'safepay'
-                      ? 'Connecting to Safepay...'
+                      ? 'Redirecting to Payment...'
                       : 'Securing Order...'
                     : !safepayStatus?.enabled && activeMethods.length === 0
                     ? 'Payment Methods Not Available'
                     : paymentRail === 'safepay'
-                    ? `Proceed to Safepay (${formatPrice(pricing.total)})`
-                    : 'Confirm & Place Order'}
+                    ? `Proceed to Pay (${formatPrice(pricing.total)})`
+                    : `Place Order (${formatPrice(pricing.total)})`}
                 </span>
               </button>
 
               <div className="text-[11px] text-center space-y-1" style={{ color: themeColors.muted }}>
                 {paymentRail === 'safepay' ? (
                   <>
-                    <p>Official Safepay 256-bit SSL encrypted checkout.</p>
-                    <p>Order is verified automatically upon payment completion.</p>
+                    <p>256-bit SSL encrypted secure checkout.</p>
+                    <p>Your order is verified automatically upon payment completion.</p>
                   </>
                 ) : (
                   <>
                     <p>Payment will be verified directly by store management.</p>
-                    <p>No credit card or automated gateway credentials required.</p>
+                    <p>Please upload proof of transfer for faster order processing.</p>
                   </>
                 )}
               </div>

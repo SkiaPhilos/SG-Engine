@@ -50,13 +50,14 @@ export const SafepayGatewayManager: React.FC = () => {
 
   // Form State (write-only for secrets)
   const [enabled, setEnabled] = useState(false);
+  const [autoConfirmOnPayment, setAutoConfirmOnPayment] = useState(true);
   const [environment, setEnvironment] = useState<'sandbox' | 'production'>('sandbox');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [secretKeyInput, setSecretKeyInput] = useState('');
   const [webhookSecretInput, setWebhookSecretInput] = useState('');
-  const [showApiKey, setShowApiKey] = useState(true);
-  const [showSecretKey, setShowSecretKey] = useState(true);
-  const [showWebhookSecret, setShowWebhookSecret] = useState(true);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [showWebhookSecret, setShowWebhookSecret] = useState(false);
 
   // Masked Status from Server
   const [status, setStatus] = useState<SafepayStatusResponse | null>(null);
@@ -66,22 +67,10 @@ export const SafepayGatewayManager: React.FC = () => {
       const data = await getSafepayStatus(storeId);
       setStatus(data);
       if (data) {
-        // Read draft to preserve toggle if server status is pending initial credentials
-        let draftEnabled: boolean | undefined = undefined;
-        try {
-          const savedDraft = localStorage.getItem(`safepay_keys_draft_${storeId}`);
-          if (savedDraft) {
-            const parsed = JSON.parse(savedDraft);
-            if (typeof parsed.enabled === 'boolean') draftEnabled = parsed.enabled;
-          }
-        } catch {}
-
-        if (draftEnabled !== undefined) {
-          setEnabled(draftEnabled);
-        } else {
-          setEnabled(Boolean(data.enabled));
+        setEnabled(Boolean(data.enabled));
+        if (typeof data.autoConfirmOnPayment === 'boolean') {
+          setAutoConfirmOnPayment(data.autoConfirmOnPayment);
         }
-
         if (data.environment) {
           setEnvironment(data.environment);
         }
@@ -94,41 +83,21 @@ export const SafepayGatewayManager: React.FC = () => {
   };
 
   useEffect(() => {
+    // Purge any legacy unencrypted keys from browser localStorage for security
     try {
-      const savedDraft = localStorage.getItem(`safepay_keys_draft_${storeId}`);
-      if (savedDraft) {
-        const parsed = JSON.parse(savedDraft);
-        if (parsed.apiKey) setApiKeyInput(parsed.apiKey);
-        if (parsed.secretKey) setSecretKeyInput(parsed.secretKey);
-        if (parsed.webhookSecret) setWebhookSecretInput(parsed.webhookSecret);
-        if (typeof parsed.enabled === 'boolean') setEnabled(parsed.enabled);
-        if (parsed.environment) setEnvironment(parsed.environment);
-      }
+      localStorage.removeItem(`safepay_keys_draft_${storeId}`);
     } catch {}
     loadStatus();
   }, [storeId]);
 
-  const updateDraft = (patch: {
-    apiKey?: string;
-    secretKey?: string;
-    webhookSecret?: string;
-    enabled?: boolean;
-    environment?: 'sandbox' | 'production';
-  }) => {
-    try {
-      const current = JSON.parse(localStorage.getItem(`safepay_keys_draft_${storeId}`) || '{}');
-      localStorage.setItem(`safepay_keys_draft_${storeId}`, JSON.stringify({ ...current, ...patch }));
-    } catch {}
-  };
-
   const handleToggleEnable = async (newEnabled: boolean) => {
     setEnabled(newEnabled);
-    updateDraft({ enabled: newEnabled });
     try {
       const updatedStatus = await configureSafepay({
         storeId,
         enabled: newEnabled,
         environment,
+        autoConfirmOnPayment,
       });
       setStatus(updatedStatus);
     } catch (err) {
@@ -136,24 +105,35 @@ export const SafepayGatewayManager: React.FC = () => {
     }
   };
 
+  const handleToggleAutoConfirm = async (newAutoConfirm: boolean) => {
+    setAutoConfirmOnPayment(newAutoConfirm);
+    try {
+      const updatedStatus = await configureSafepay({
+        storeId,
+        enabled,
+        environment,
+        autoConfirmOnPayment: newAutoConfirm,
+      });
+      setStatus(updatedStatus);
+    } catch (err) {
+      console.warn('Auto-persisting AutoConfirm toggle note:', err);
+    }
+  };
+
   const handleEnvironmentChange = (newEnv: 'sandbox' | 'production') => {
     setEnvironment(newEnv);
-    updateDraft({ environment: newEnv });
   };
 
   const handleApiKeyChange = (val: string) => {
     setApiKeyInput(val);
-    updateDraft({ apiKey: val });
   };
 
   const handleSecretKeyChange = (val: string) => {
     setSecretKeyInput(val);
-    updateDraft({ secretKey: val });
   };
 
   const handleWebhookSecretChange = (val: string) => {
     setWebhookSecretInput(val);
-    updateDraft({ webhookSecret: val });
   };
 
   const handleCopyWebhook = () => {
@@ -164,7 +144,7 @@ export const SafepayGatewayManager: React.FC = () => {
   };
 
   const handleClearVault = async () => {
-    if (!window.confirm('Clear all stored Safepay credentials? This will reset the encrypted vault and allow you to enter fresh keys.')) {
+    if (!window.confirm('Clear all stored Safepay credentials? This will reset the server vault and allow you to enter fresh keys.')) {
       return;
     }
     setClearing(true);
@@ -212,18 +192,18 @@ export const SafepayGatewayManager: React.FC = () => {
         webhookSecret: webhookSecretInput.trim() ? webhookSecretInput.trim() : undefined,
         environment,
         enabled,
+        autoConfirmOnPayment,
       });
 
       setStatus(updatedStatus);
+      // Immediately wipe plaintext secret inputs from local React state for zero-exposure security
+      setApiKeyInput('');
+      setSecretKeyInput('');
+      setWebhookSecretInput('');
       try {
-        localStorage.setItem(`safepay_keys_draft_${storeId}`, JSON.stringify({
-          apiKey: apiKeyInput.trim(),
-          secretKey: secretKeyInput.trim(),
-          webhookSecret: webhookSecretInput.trim(),
-          enabled,
-          environment,
-        }));
+        localStorage.removeItem(`safepay_keys_draft_${storeId}`);
       } catch {}
+
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
     } catch (err: any) {
@@ -367,6 +347,28 @@ export const SafepayGatewayManager: React.FC = () => {
                 type="checkbox"
                 checked={enabled}
                 onChange={e => handleToggleEnable(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+            </label>
+          </div>
+
+          {/* Automatic Order Confirmation Toggle */}
+          <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: themeColors.border }}>
+            <div className="pr-4">
+              <p className="text-sm font-bold" style={{ color: themeColors.text }}>
+                Automatic Order Confirmation
+              </p>
+              <p className="text-xs" style={{ color: themeColors.muted }}>
+                Automatically mark orders as Confirmed when Safepay payment is verified. Toggle off if you want paid orders to stay in Pending status until you manually review and confirm them.
+              </p>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+              <input
+                type="checkbox"
+                checked={autoConfirmOnPayment}
+                onChange={e => handleToggleAutoConfirm(e.target.checked)}
                 className="sr-only peer"
               />
               <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
@@ -602,8 +604,8 @@ export const SafepayGatewayManager: React.FC = () => {
                 Safepay Public Key (from Developer &gt; APIs)
               </label>
               {status?.hasApiKey && (
-                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
-                  Saved: {status.maskedApiKey}
+                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  <Check className="w-3 h-3" /> Saved in Vault ({status.maskedApiKey})
                 </span>
               )}
             </div>
@@ -613,7 +615,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKeyInput}
                 onChange={e => handleApiKeyChange(e.target.value)}
-                placeholder="Paste Public Key (from Safepay Developer > APIs)"
+                placeholder={status?.hasApiKey ? "Enter new Public Key to replace existing key" : "Paste Public Key (sec_... or pub_...)"}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -630,7 +632,9 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Copy the <strong>Public Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
+              {status?.hasApiKey 
+                ? 'Your key is safely encrypted at rest on the server. Leave blank to keep existing key, or paste a new key to update.' 
+                : 'Copy the Public Key from Safepay Dashboard > Developer > APIs.'}
             </p>
           </div>
 
@@ -641,8 +645,8 @@ export const SafepayGatewayManager: React.FC = () => {
                 Safepay Secret Key (from Developer &gt; APIs)
               </label>
               {status?.hasSecretKey && (
-                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
-                  Saved: {status.maskedSecretKey}
+                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  <Check className="w-3 h-3" /> Saved in Vault ({status.maskedSecretKey})
                 </span>
               )}
             </div>
@@ -652,7 +656,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showSecretKey ? 'text' : 'password'}
                 value={secretKeyInput}
                 onChange={e => handleSecretKeyChange(e.target.value)}
-                placeholder="Paste Secret Key (from Safepay Developer > APIs)"
+                placeholder={status?.hasSecretKey ? "Enter new Secret Key to replace existing secret" : "Paste 64-character hex Secret Key"}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -669,7 +673,9 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Copy the <strong>Secret Key</strong> from Safepay Dashboard &gt; Developer &gt; APIs.
+              {status?.hasSecretKey 
+                ? 'Your secret key is safely encrypted at rest on the server. Leave blank to keep existing secret, or paste a new secret to update.'
+                : 'Copy the Secret Key from Safepay Dashboard > Developer > APIs.'}
             </p>
           </div>
 
@@ -680,8 +686,8 @@ export const SafepayGatewayManager: React.FC = () => {
                 Safepay Shared Webhook Secret (from Developer &gt; Endpoints)
               </label>
               {status?.hasWebhookSecret && (
-                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
-                  Saved: ••••••••••••••••
+                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  <Check className="w-3 h-3" /> Saved in Vault (••••••••••••••••)
                 </span>
               )}
             </div>
@@ -691,7 +697,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showWebhookSecret ? 'text' : 'password'}
                 value={webhookSecretInput}
                 onChange={e => handleWebhookSecretChange(e.target.value)}
-                placeholder="Paste Shared Secret (from Safepay Developer > Endpoints)"
+                placeholder={status?.hasWebhookSecret ? "Enter new Webhook Secret to replace existing" : "Paste Shared Secret (from Developer > Endpoints)"}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -708,7 +714,9 @@ export const SafepayGatewayManager: React.FC = () => {
               </button>
             </div>
             <p className="text-[11px]" style={{ color: themeColors.muted }}>
-              Copy the <strong>Shared Webhook Secret</strong> from Safepay Dashboard &gt; Developer &gt; Endpoints (Webhooks).
+              {status?.hasWebhookSecret
+                ? 'Your webhook secret is encrypted at rest. Leave blank to keep existing secret, or paste a new secret to update.'
+                : 'Copy the Shared Webhook Secret from Safepay Dashboard > Developer > Endpoints (Webhooks).'}
             </p>
           </div>
 

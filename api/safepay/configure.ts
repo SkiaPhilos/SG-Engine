@@ -34,7 +34,7 @@ export default async function handler(req: any, res: any) {
       body = {};
     }
 
-    const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled } = body;
+    const { storeId = 'default', apiKey, secretKey, webhookSecret, environment, enabled, autoConfirmOnPayment } = body;
 
     await saveSafepayCredentials(storeId, {
       apiKey,
@@ -42,6 +42,7 @@ export default async function handler(req: any, res: any) {
       webhookSecret,
       environment,
       enabled,
+      autoConfirmOnPayment,
     });
 
     const host = req.headers?.host || 'localhost:3000';
