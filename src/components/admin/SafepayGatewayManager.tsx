@@ -65,8 +65,8 @@ export const SafepayGatewayManager: React.FC = () => {
   const loadStatus = async () => {
     try {
       const data = await getSafepayStatus(storeId);
-      setStatus(data);
       if (data) {
+        setStatus(data);
         setEnabled(Boolean(data.enabled));
         if (typeof data.autoConfirmOnPayment === 'boolean') {
           setAutoConfirmOnPayment(data.autoConfirmOnPayment);
@@ -99,7 +99,10 @@ export const SafepayGatewayManager: React.FC = () => {
         environment,
         autoConfirmOnPayment,
       });
-      setStatus(updatedStatus);
+      if (updatedStatus) {
+        setStatus(updatedStatus);
+        setEnabled(Boolean(updatedStatus.enabled));
+      }
     } catch (err) {
       console.warn('Auto-persisting Safepay toggle note:', err);
     }
@@ -114,7 +117,12 @@ export const SafepayGatewayManager: React.FC = () => {
         environment,
         autoConfirmOnPayment: newAutoConfirm,
       });
-      setStatus(updatedStatus);
+      if (updatedStatus) {
+        setStatus(updatedStatus);
+        if (typeof updatedStatus.autoConfirmOnPayment === 'boolean') {
+          setAutoConfirmOnPayment(updatedStatus.autoConfirmOnPayment);
+        }
+      }
     } catch (err) {
       console.warn('Auto-persisting AutoConfirm toggle note:', err);
     }
@@ -185,17 +193,24 @@ export const SafepayGatewayManager: React.FC = () => {
     }
 
     try {
+      const willBeEnabled = enabled || Boolean(status?.enabled) || Boolean(apiKeyInput.trim());
       const updatedStatus = await configureSafepay({
         storeId,
         apiKey: apiKeyInput.trim() ? apiKeyInput.trim() : undefined,
         secretKey: secretKeyInput.trim() ? secretKeyInput.trim() : undefined,
         webhookSecret: webhookSecretInput.trim() ? webhookSecretInput.trim() : undefined,
         environment,
-        enabled,
+        enabled: willBeEnabled,
         autoConfirmOnPayment,
       });
 
-      setStatus(updatedStatus);
+      if (updatedStatus) {
+        setStatus(updatedStatus);
+        setEnabled(Boolean(updatedStatus.enabled));
+        if (typeof updatedStatus.autoConfirmOnPayment === 'boolean') {
+          setAutoConfirmOnPayment(updatedStatus.autoConfirmOnPayment);
+        }
+      }
       // Immediately wipe plaintext secret inputs from local React state for zero-exposure security
       setApiKeyInput('');
       setSecretKeyInput('');

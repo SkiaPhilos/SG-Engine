@@ -685,7 +685,37 @@ export async function getPaymentMethods(storeId = DEFAULT_STORE_ID): Promise<Pay
       return getLocalItem<PaymentMethod[]>(`payment_methods_${storeId}`, []);
     }
 
-    const methods = (data || []).map(toPaymentMethod);
+    let methods = (data || []).map(toPaymentMethod);
+
+    // If no COD method exists in store payment methods, guarantee default COD is available
+    if (!methods.some(m => m.type === 'cod')) {
+      const defaultCod: PaymentMethod = {
+        id: `pm_cod_${storeId}`,
+        storeId,
+        type: 'cod',
+        displayName: 'Cash on Delivery (COD)',
+        accountTitle: 'Cash on Delivery',
+        accountNumber: 'Doorstep Cash Collection',
+        iban: '',
+        bankName: '',
+        instructions: 'Pay cash directly to the courier delivery rider when your parcel arrives at your doorstep. Please keep exact cash ready.',
+        qrCodeUrl: '',
+        requireScreenshot: false,
+        requireTransactionReference: false,
+        enabled: true,
+        sortOrder: -1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      methods = [defaultCod, ...methods];
+      if (isSupabaseConfigured()) {
+        try {
+          const row = fromPaymentMethod(defaultCod);
+          Promise.resolve(supabase.from('payment_methods').upsert(row, { onConflict: 'id' })).catch(() => {});
+        } catch {}
+      }
+    }
+
     setLocalItem(`payment_methods_${storeId}`, methods);
     return methods;
   } catch (err) {

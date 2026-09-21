@@ -46,10 +46,12 @@ export const CheckoutView: React.FC = () => {
   } = useStore();
 
   const activeMethods = paymentMethods.filter(pm => pm.enabled);
+  const codMethod = activeMethods.find(pm => pm.type === 'cod');
+  const advanceMethods = activeMethods.filter(pm => pm.type !== 'cod' && pm.type !== 'safepay');
 
-  // Gateway and Payment Rail State
+  // Gateway and Payment Rail State: 'cod' (Cash on Delivery), 'safepay' (Pay Live Online), 'manual' (Pay in Advance)
   const [safepayStatus, setSafepayStatus] = useState<SafepayStatusResponse | null>(null);
-  const [paymentRail, setPaymentRail] = useState<'manual' | 'safepay'>('manual');
+  const [paymentRail, setPaymentRail] = useState<'cod' | 'safepay' | 'manual'>('cod');
 
   useEffect(() => {
     let isMounted = true;
@@ -62,7 +64,9 @@ export const CheckoutView: React.FC = () => {
         enabled: isOnlineAvailable,
       });
 
-      if (isOnlineAvailable) {
+      if (codMethod) {
+        setPaymentRail('cod');
+      } else if (isOnlineAvailable) {
         setPaymentRail('safepay');
       } else {
         setPaymentRail('manual');
@@ -70,7 +74,11 @@ export const CheckoutView: React.FC = () => {
     }).catch(err => {
       console.warn('Payment status query note:', err);
       if (isMounted) {
-        setPaymentRail('manual');
+        if (codMethod) {
+          setPaymentRail('cod');
+        } else {
+          setPaymentRail('manual');
+        }
       }
     });
 
@@ -105,7 +113,7 @@ export const CheckoutView: React.FC = () => {
   });
 
   const [selectedMethodId, setSelectedMethodId] = useState<string>(
-    activeMethods[0]?.id || ''
+    advanceMethods[0]?.id || activeMethods[0]?.id || ''
   );
   const [transactionRef, setTransactionRef] = useState<string>('');
   const [proofImageBase64, setProofImageBase64] = useState<string>('');
@@ -114,7 +122,7 @@ export const CheckoutView: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const selectedMethod = activeMethods.find(m => m.id === selectedMethodId);
+  const selectedMethod = advanceMethods.find(m => m.id === selectedMethodId) || advanceMethods[0];
 
   const handleCopy = (text: string, fieldName: string) => {
     navigator.clipboard.writeText(text);
@@ -163,7 +171,7 @@ export const CheckoutView: React.FC = () => {
 
     if (paymentRail === 'manual') {
       if (!selectedMethod) {
-        setErrorMessage('Please select a payment destination.');
+        setErrorMessage('Please select an advance transfer destination.');
         return;
       }
       if (selectedMethod.requireTransactionReference && !transactionRef.trim()) {
@@ -187,6 +195,36 @@ export const CheckoutView: React.FC = () => {
 
       const orderNumber = `SE-${Math.floor(100000 + Math.random() * 900000)}`;
 
+      // 2a. Cash on Delivery (COD) Order Placement
+      if (paymentRail === 'cod') {
+        const orderId = await createOrder(storeId, {
+          storeId,
+          orderNumber,
+          customer,
+          items: pricing.items,
+          appliedOffers: pricing.appliedOffers,
+          subtotal: pricing.subtotal,
+          discountTotal: pricing.discountTotal,
+          deliveryFee: pricing.deliveryFee,
+          total: pricing.total,
+          paymentMethodId: codMethod?.id || 'cod',
+          paymentMethodName: codMethod?.displayName || 'Cash on Delivery (COD)',
+          paymentStatus: 'pending_verification',
+          orderStatus: 'pending',
+          inventoryHoldId: hold.holdId,
+        });
+
+        if (hold.holdId) {
+          await consumeInventoryHold(hold.holdId, orderId);
+        }
+
+        setActiveOrderId(orderId);
+        clearCart();
+        setCurrentView('order_confirmation');
+        return;
+      }
+
+      // 2b. Live Online Payment Placement
       if (paymentRail === 'safepay') {
         // Create initial pending order in Supabase with attached reservation hold
         const orderId = await createOrder(storeId, {
@@ -235,7 +273,7 @@ export const CheckoutView: React.FC = () => {
         return;
       }
 
-      // Default Manual Transfer Order Placement
+      // 2c. Pay in Advance (Manual Transfer) Order Placement
       const orderId = await createOrder(storeId, {
         storeId,
         orderNumber,
@@ -462,69 +500,139 @@ export const CheckoutView: React.FC = () => {
                   <CreditCard className="w-4 h-4" style={{ color: themeColors.primary }} />
                   <span>Payment Method</span>
                 </h2>
-                {safepayStatus?.enabled && activeMethods.length > 0 && (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                    Choose Method
-                  </span>
-                )}
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-neutral-500/10 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20">
+                  Select an Option
+                </span>
               </div>
 
-              {/* Both Rails Available: Let Customer Choose Online vs Manual Direct Transfer */}
-              {safepayStatus?.enabled && activeMethods.length > 0 && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-1">
-                  <button
-                    type="button"
-                    onClick={() => setPaymentRail('safepay')}
-                    className={`p-3.5 rounded-xl border text-left transition-all ${
-                      paymentRail === 'safepay' ? 'ring-2 shadow-xs' : 'hover:border-neutral-400 opacity-80'
-                    }`}
-                    style={{
-                      borderColor: paymentRail === 'safepay' ? '#10b981' : themeColors.border,
-                      backgroundColor: paymentRail === 'safepay' ? '#10b98110' : themeColors.background,
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-bold flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
-                        <Zap className="w-3.5 h-3.5 fill-emerald-500 text-emerald-500" />
-                        Pay Online (Instant)
-                      </span>
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
-                        Card / Wallets
-                      </span>
-                    </div>
-                    <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
-                      Visa, Mastercard, PayPak debit card, or mobile wallets with instant confirmation.
-                    </p>
-                  </button>
+              {/* Multi-Option Selector Cards */}
+              {((codMethod ? 1 : 0) + (safepayStatus?.enabled ? 1 : 0) + (advanceMethods.length > 0 ? 1 : 0)) > 1 && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pb-1">
+                  {/* COD Option */}
+                  {codMethod && (
+                    <button
+                      type="button"
+                      onClick={() => setPaymentRail('cod')}
+                      className={`p-3.5 rounded-xl border text-left transition-all ${
+                        paymentRail === 'cod' ? 'ring-2 shadow-xs' : 'hover:border-neutral-400 opacity-80'
+                      }`}
+                      style={{
+                        borderColor: paymentRail === 'cod' ? '#059669' : themeColors.border,
+                        backgroundColor: paymentRail === 'cod' ? '#05966912' : themeColors.background,
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
+                          <Truck className="w-3.5 h-3.5 text-emerald-600" />
+                          Cash on Delivery
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-emerald-500/20 text-emerald-800 dark:text-emerald-200">
+                          70% Popular
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
+                        Pay cash at your doorstep upon package arrival.
+                      </p>
+                    </button>
+                  )}
 
-                  <button
-                    type="button"
-                    onClick={() => setPaymentRail('manual')}
-                    className={`p-3.5 rounded-xl border text-left transition-all ${
-                      paymentRail === 'manual' ? 'ring-2 shadow-xs' : 'hover:border-neutral-400 opacity-80'
-                    }`}
-                    style={{
-                      borderColor: paymentRail === 'manual' ? themeColors.primary : themeColors.border,
-                      backgroundColor: paymentRail === 'manual' ? `${themeColors.primary}08` : themeColors.background,
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-bold" style={{ color: themeColors.text }}>
-                        Direct Transfer (Manual)
-                      </span>
-                    </div>
-                    <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
-                      Transfer directly via JazzCash, Easypaisa, Raast, or Bank &amp; share proof.
-                    </p>
-                  </button>
+                  {/* Live Online Payment Option */}
+                  {safepayStatus?.enabled && (
+                    <button
+                      type="button"
+                      onClick={() => setPaymentRail('safepay')}
+                      className={`p-3.5 rounded-xl border text-left transition-all ${
+                        paymentRail === 'safepay' ? 'ring-2 shadow-xs' : 'hover:border-neutral-400 opacity-80'
+                      }`}
+                      style={{
+                        borderColor: paymentRail === 'safepay' ? '#2563eb' : themeColors.border,
+                        backgroundColor: paymentRail === 'safepay' ? '#2563eb12' : themeColors.background,
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold flex items-center gap-1.5 text-blue-700 dark:text-blue-300">
+                          <Zap className="w-3.5 h-3.5 fill-blue-500 text-blue-500" />
+                          Pay Live Online
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-blue-500/20 text-blue-800 dark:text-blue-200">
+                          Instant Confirm
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
+                        Visa, Mastercard, PayPak, or digital wallets.
+                      </p>
+                    </button>
+                  )}
+
+                  {/* Pay in Advance (Manual) */}
+                  {advanceMethods.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setPaymentRail('manual')}
+                      className={`p-3.5 rounded-xl border text-left transition-all ${
+                        paymentRail === 'manual' ? 'ring-2 shadow-xs' : 'hover:border-neutral-400 opacity-80'
+                      }`}
+                      style={{
+                        borderColor: paymentRail === 'manual' ? themeColors.primary : themeColors.border,
+                        backgroundColor: paymentRail === 'manual' ? `${themeColors.primary}12` : themeColors.background,
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold flex items-center gap-1.5" style={{ color: themeColors.text }}>
+                          <Building2 className="w-3.5 h-3.5" style={{ color: themeColors.primary }} />
+                          Pay in Advance
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-neutral-200 dark:bg-neutral-800" style={{ color: themeColors.text }}>
+                          Manual Proof
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
+                        Transfer via JazzCash, Easypaisa, or Bank IBAN.
+                      </p>
+                    </button>
+                  )}
                 </div>
               )}
 
               {/* No Payment Methods Available at All */}
-              {!safepayStatus?.enabled && activeMethods.length === 0 ? (
+              {!safepayStatus?.enabled && !codMethod && advanceMethods.length === 0 ? (
                 <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50 text-neutral-600 dark:text-neutral-400 text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 text-neutral-500" />
-                  <span>Payment methods not available.</span>
+                  <span>Payment methods not available. Please contact store owner.</span>
+                </div>
+              ) : paymentRail === 'cod' && codMethod ? (
+                /* Cash on Delivery Card */
+                <div
+                  className="p-5 rounded-xl border space-y-3"
+                  style={{
+                    backgroundColor: themeColors.background,
+                    borderColor: '#05966940',
+                  }}
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                        <Truck className="w-4 h-4 text-emerald-600" />
+                        Cash on Delivery (COD) Selected
+                      </span>
+                      <p className="text-xs mt-1" style={{ color: themeColors.text }}>
+                        Pay cash directly to the courier delivery rider upon package arrival.
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
+                      Doorstep Collection
+                    </span>
+                  </div>
+
+                  <div className="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-900 dark:text-emerald-100 text-xs space-y-1.5">
+                    <p className="font-semibold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Amount due at delivery: {formatPrice(pricing.total)}
+                    </p>
+                    <p className="text-[11px] opacity-90 leading-relaxed">
+                      No advance bank deposit or card payment needed. Your items are reserved immediately upon clicking Confirm Order below.
+                    </p>
+                  </div>
                 </div>
               ) : paymentRail === 'safepay' && safepayStatus?.enabled ? (
                 /* Online Payment Rail Card */
@@ -532,17 +640,17 @@ export const CheckoutView: React.FC = () => {
                   className="p-5 rounded-xl border space-y-4"
                   style={{
                     backgroundColor: themeColors.background,
-                    borderColor: '#10b98140',
+                    borderColor: '#2563eb40',
                   }}
                 >
                   <div className="flex items-start justify-between">
                     <div>
-                      <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-600 flex items-center gap-1.5">
-                        <Zap className="w-4 h-4 text-emerald-600" />
-                        Online Checkout
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                        <Zap className="w-4 h-4 text-blue-600" />
+                        Live Online Checkout
                       </span>
                       <p className="text-xs mt-1" style={{ color: themeColors.muted }}>
-                        Instant, encrypted checkout. No manual receipt upload required.
+                        Instant, encrypted checkout with automated order confirmation.
                       </p>
                     </div>
                   </div>
@@ -559,22 +667,25 @@ export const CheckoutView: React.FC = () => {
                     </span>
                   </div>
 
-                  <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-200 text-xs flex items-start gap-2.5">
-                    <ShieldCheck className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-600" />
+                  <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-900 dark:text-blue-200 text-xs flex items-start gap-2.5">
+                    <ShieldCheck className="w-4 h-4 flex-shrink-0 mt-0.5 text-blue-600" />
                     <span className="leading-relaxed">
-                      When you submit your order, you will be securely redirected to the payment page to complete your payment.
+                      When you click <strong>Proceed to Pay</strong>, you will be securely redirected to complete your payment with instant automated confirmation.
                     </span>
                   </div>
                 </div>
-              ) : activeMethods.length === 0 ? (
+              ) : advanceMethods.length === 0 ? (
                 <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50 text-neutral-600 dark:text-neutral-400 text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 text-neutral-500" />
-                  <span>Payment methods not available.</span>
+                  <span>Advance payment methods not available.</span>
                 </div>
               ) : (
                 <div className="space-y-3">
+                  <p className="text-xs font-medium" style={{ color: themeColors.muted }}>
+                    Select your bank or mobile wallet to view transfer details:
+                  </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {activeMethods.map(method => (
+                    {advanceMethods.map(method => (
                       <button
                         key={method.id}
                         type="button"
@@ -618,11 +729,11 @@ export const CheckoutView: React.FC = () => {
                       }}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                        <span className="text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
                           {selectedMethod.displayName} Transfer Details
                         </span>
                         <span className="text-[11px] font-mono px-2 py-0.5 rounded-sm bg-neutral-200 dark:bg-neutral-800">
-                          Direct Payment
+                          Pay in Advance
                         </span>
                       </div>
 
@@ -817,13 +928,15 @@ export const CheckoutView: React.FC = () => {
               <button
                 id="submit-order-btn"
                 type="submit"
-                disabled={isSubmitting || pricing.items.length === 0 || (!safepayStatus?.enabled && activeMethods.length === 0)}
+                disabled={isSubmitting || pricing.items.length === 0 || (!safepayStatus?.enabled && !codMethod && advanceMethods.length === 0)}
                 className="w-full py-3.5 rounded-xl font-bold text-sm text-white flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95 disabled:opacity-40"
                 style={{
-                  backgroundColor: paymentRail === 'safepay' ? '#10b981' : themeColors.primary,
+                  backgroundColor: paymentRail === 'cod' ? '#059669' : paymentRail === 'safepay' ? '#2563eb' : themeColors.primary,
                 }}
               >
-                {paymentRail === 'safepay' ? (
+                {paymentRail === 'cod' ? (
+                  <Truck className="w-4 h-4" />
+                ) : paymentRail === 'safepay' ? (
                   <Zap className="w-4 h-4 fill-white" />
                 ) : (
                   <ShieldCheck className="w-4 h-4" />
@@ -832,17 +945,26 @@ export const CheckoutView: React.FC = () => {
                   {isSubmitting
                     ? paymentRail === 'safepay'
                       ? 'Redirecting to Payment...'
-                      : 'Securing Order...'
-                    : !safepayStatus?.enabled && activeMethods.length === 0
+                      : paymentRail === 'cod'
+                      ? 'Placing COD Order...'
+                      : 'Submitting Order...'
+                    : !safepayStatus?.enabled && !codMethod && advanceMethods.length === 0
                     ? 'Payment Methods Not Available'
                     : paymentRail === 'safepay'
                     ? `Proceed to Pay (${formatPrice(pricing.total)})`
-                    : `Place Order (${formatPrice(pricing.total)})`}
+                    : paymentRail === 'cod'
+                    ? `Place Order (COD) • ${formatPrice(pricing.total)}`
+                    : `Submit Order for Verification • ${formatPrice(pricing.total)}`}
                 </span>
               </button>
 
               <div className="text-[11px] text-center space-y-1" style={{ color: themeColors.muted }}>
-                {paymentRail === 'safepay' ? (
+                {paymentRail === 'cod' ? (
+                  <>
+                    <p>Pay cash upon delivery at your doorstep.</p>
+                    <p>No card or advance deposit required.</p>
+                  </>
+                ) : paymentRail === 'safepay' ? (
                   <>
                     <p>256-bit SSL encrypted secure checkout.</p>
                     <p>Your order is verified automatically upon payment completion.</p>

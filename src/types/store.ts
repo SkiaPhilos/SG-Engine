@@ -88,7 +88,8 @@ export type PaymentMethodType =
   | 'bank_transfer'
   | 'nayapay'
   | 'custom_transfer'
-  | 'safepay';
+  | 'safepay'
+  | 'cod';
 
 export interface PaymentMethod {
   id: string;

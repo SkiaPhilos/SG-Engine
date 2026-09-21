@@ -13,6 +13,8 @@ import {
   ShieldCheck,
   AlertCircle,
   Copy,
+  Truck,
+  Zap,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { PaymentMethod, PaymentType } from '../../types/store';
@@ -26,6 +28,7 @@ export const PaymentsManager: React.FC = () => {
   const [saving, setSaving] = useState(false);
 
   const availableTypes: { type: PaymentType; label: string; defaultName: string }[] = [
+    { type: 'cod', label: 'Cash on Delivery (COD)', defaultName: 'Cash on Delivery (COD)' },
     { type: 'jazzcash', label: 'JazzCash Wallet', defaultName: 'JazzCash' },
     { type: 'easypaisa', label: 'Easypaisa Wallet', defaultName: 'Easypaisa' },
     { type: 'bank_transfer', label: 'Direct Bank Transfer', defaultName: 'Bank Transfer' },
@@ -38,16 +41,18 @@ export const PaymentsManager: React.FC = () => {
     const matched = availableTypes.find(t => t.type === selectedType);
     setCurrentMethod({
       type: selectedType,
-      displayName: matched?.defaultName || 'Direct Payment',
-      accountTitle: '',
-      accountNumber: '',
+      displayName: matched?.defaultName || (selectedType === 'cod' ? 'Cash on Delivery (COD)' : 'Direct Payment'),
+      accountTitle: selectedType === 'cod' ? 'Cash on Delivery' : '',
+      accountNumber: selectedType === 'cod' ? 'Doorstep Cash Collection' : '',
       iban: '',
       bankName: selectedType === 'bank_transfer' ? 'Meezan Bank' : '',
-      instructions: 'Transfer funds to account above. Submit screenshot or TID for order confirmation.',
+      instructions: selectedType === 'cod'
+        ? 'Pay cash directly to the courier delivery rider when your parcel arrives at your doorstep. Please keep exact cash ready.'
+        : 'Transfer funds to account above. Submit screenshot or TID for order confirmation.',
       qrCodeUrl: '',
       enabled: true,
-      requireScreenshot: true,
-      requireTransactionReference: true,
+      requireScreenshot: selectedType !== 'cod',
+      requireTransactionReference: selectedType !== 'cod',
     });
     setIsEditing(true);
   };
@@ -88,6 +93,10 @@ export const PaymentsManager: React.FC = () => {
 
   const getMethodIcon = (type: PaymentType) => {
     switch (type) {
+      case 'cod':
+        return <Truck className="w-4 h-4 text-emerald-600" />;
+      case 'safepay':
+        return <Zap className="w-4 h-4 text-indigo-600" />;
       case 'jazzcash':
       case 'easypaisa':
       case 'nayapay':
@@ -106,10 +115,10 @@ export const PaymentsManager: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight" style={{ color: themeColors.text }}>
-            Payment Destinations ({paymentMethods.length})
+            Payment Methods ({paymentMethods.length})
           </h2>
           <p className="text-xs" style={{ color: themeColors.muted }}>
-            Direct payment channels (JazzCash, Easypaisa, Bank Transfer, Raast). Whatever you configure here directly mirrors in customer checkout.
+            Manage Cash on Delivery (COD) and manual advance payment channels (JazzCash, Easypaisa, Bank Transfer, Raast).
           </p>
         </div>
 
@@ -123,6 +132,42 @@ export const PaymentsManager: React.FC = () => {
             <Plus className="w-4 h-4" />
             <span>Add Destination</span>
           </button>
+        </div>
+      </div>
+
+      {/* Payment Types Guidance Banner */}
+      <div
+        className="p-4 rounded-2xl border text-xs grid grid-cols-1 md:grid-cols-3 gap-3"
+        style={{ backgroundColor: themeColors.surface, borderColor: themeColors.border }}
+      >
+        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 space-y-1">
+          <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300 font-bold">
+            <Truck className="w-4 h-4" />
+            <span>Cash on Delivery (70%)</span>
+          </div>
+          <p className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-relaxed">
+            Over 70% of Pakistani shoppers choose COD. Physical cash is collected at the customer's doorstep upon parcel delivery.
+          </p>
+        </div>
+
+        <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 space-y-1">
+          <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-300 font-bold">
+            <Zap className="w-4 h-4" />
+            <span>Pay Live Online</span>
+          </div>
+          <p className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-relaxed">
+            Live debit/credit card and wallet checkout. Orders are verified and automatically confirmed via secure live session.
+          </p>
+        </div>
+
+        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-1">
+          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 font-bold">
+            <Building2 className="w-4 h-4" />
+            <span>Pay in Advance (Manual)</span>
+          </div>
+          <p className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-relaxed">
+            Customers transfer in advance to your JazzCash, Easypaisa, or Bank IBAN, attach proof of payment, and await manual verification.
+          </p>
         </div>
       </div>
 
@@ -295,68 +340,82 @@ export const PaymentsManager: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold mb-1">Account Title / Beneficiary</label>
-                  <input
-                    type="text"
-                    value={currentMethod.accountTitle || ''}
-                    onChange={e => setCurrentMethod({ ...currentMethod, accountTitle: e.target.value })}
-                    placeholder="e.g. Store Owner / Silk & Stone"
-                    className="w-full px-3 py-2 rounded-xl border text-xs outline-none"
-                    style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
-                  />
+              {currentMethod.type === 'cod' ? (
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-200 text-xs flex items-start gap-3">
+                  <Truck className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">Cash on Delivery (COD) Selected</p>
+                    <p className="text-[11px] mt-1 leading-relaxed opacity-90">
+                      No bank accounts, IBANs, or receipts are required. Customers pay physical cash to the delivery rider when receiving the package.
+                    </p>
+                  </div>
                 </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold mb-1">Account Title / Beneficiary</label>
+                      <input
+                        type="text"
+                        value={currentMethod.accountTitle || ''}
+                        onChange={e => setCurrentMethod({ ...currentMethod, accountTitle: e.target.value })}
+                        placeholder="e.g. Store Owner / Silk & Stone"
+                        className="w-full px-3 py-2 rounded-xl border text-xs outline-none"
+                        style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+                      />
+                    </div>
 
-                <div>
-                  <label className="block font-semibold mb-1">Account / Mobile Number</label>
-                  <input
-                    type="text"
-                    value={currentMethod.accountNumber || ''}
-                    onChange={e => setCurrentMethod({ ...currentMethod, accountNumber: e.target.value })}
-                    placeholder="03001234567"
-                    className="w-full px-3 py-2 rounded-xl border text-xs font-mono outline-none"
-                    style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
-                  />
-                </div>
-              </div>
+                    <div>
+                      <label className="block font-semibold mb-1">Account / Mobile Number</label>
+                      <input
+                        type="text"
+                        value={currentMethod.accountNumber || ''}
+                        onChange={e => setCurrentMethod({ ...currentMethod, accountNumber: e.target.value })}
+                        placeholder="03001234567"
+                        className="w-full px-3 py-2 rounded-xl border text-xs font-mono outline-none"
+                        style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+                      />
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold mb-1">IBAN / Raast ID (Optional)</label>
-                  <input
-                    type="text"
-                    value={currentMethod.iban || ''}
-                    onChange={e => setCurrentMethod({ ...currentMethod, iban: e.target.value })}
-                    placeholder="PK36MEZN0000000..."
-                    className="w-full px-3 py-2 rounded-xl border text-xs font-mono outline-none"
-                    style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
-                  />
-                </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold mb-1">IBAN / Raast ID (Optional)</label>
+                      <input
+                        type="text"
+                        value={currentMethod.iban || ''}
+                        onChange={e => setCurrentMethod({ ...currentMethod, iban: e.target.value })}
+                        placeholder="PK36MEZN0000000..."
+                        className="w-full px-3 py-2 rounded-xl border text-xs font-mono outline-none"
+                        style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+                      />
+                    </div>
 
-                <div>
-                  <label className="block font-semibold mb-1">Bank Name (For Bank Transfers)</label>
-                  <input
-                    type="text"
-                    value={currentMethod.bankName || ''}
-                    onChange={e => setCurrentMethod({ ...currentMethod, bankName: e.target.value })}
-                    placeholder="e.g. Meezan Bank, HBL, Bank Alfalah"
-                    className="w-full px-3 py-2 rounded-xl border text-xs outline-none"
-                    style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
-                  />
-                </div>
-              </div>
+                    <div>
+                      <label className="block font-semibold mb-1">Bank Name (For Bank Transfers)</label>
+                      <input
+                        type="text"
+                        value={currentMethod.bankName || ''}
+                        onChange={e => setCurrentMethod({ ...currentMethod, bankName: e.target.value })}
+                        placeholder="e.g. Meezan Bank, HBL, Bank Alfalah"
+                        className="w-full px-3 py-2 rounded-xl border text-xs outline-none"
+                        style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+                      />
+                    </div>
+                  </div>
 
-              <div>
-                <ImageUpload
-                  value={currentMethod.qrCodeUrl || ''}
-                  onChange={url => setCurrentMethod({ ...currentMethod, qrCodeUrl: url })}
-                  label="QR Code Image (Optional)"
-                  helperText="Upload your bank/wallet QR code image for instant customer scanning"
-                  aspectRatio="square"
-                  maxDimension={600}
-                />
-              </div>
+                  <div>
+                    <ImageUpload
+                      value={currentMethod.qrCodeUrl || ''}
+                      onChange={url => setCurrentMethod({ ...currentMethod, qrCodeUrl: url })}
+                      label="QR Code Image (Optional)"
+                      helperText="Upload your bank/wallet QR code image for instant customer scanning"
+                      aspectRatio="square"
+                      maxDimension={600}
+                    />
+                  </div>
+                </>
+              )}
 
               <div>
                 <label className="block font-semibold mb-1">Payment Instructions to Customer</label>
@@ -371,29 +430,33 @@ export const PaymentsManager: React.FC = () => {
               </div>
 
               <div className="space-y-2 pt-2 border-t" style={{ borderColor: themeColors.border }}>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="require-tid"
-                    checked={Boolean(currentMethod.requireTransactionReference)}
-                    onChange={e => setCurrentMethod({ ...currentMethod, requireTransactionReference: e.target.checked })}
-                  />
-                  <label htmlFor="require-tid" className="font-semibold cursor-pointer">
-                    Require Customer to enter Transaction ID / TID
-                  </label>
-                </div>
+                {currentMethod.type !== 'cod' && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="require-tid"
+                        checked={Boolean(currentMethod.requireTransactionReference)}
+                        onChange={e => setCurrentMethod({ ...currentMethod, requireTransactionReference: e.target.checked })}
+                      />
+                      <label htmlFor="require-tid" className="font-semibold cursor-pointer">
+                        Require Customer to enter Transaction ID / TID
+                      </label>
+                    </div>
 
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="require-proof"
-                    checked={Boolean(currentMethod.requireScreenshot)}
-                    onChange={e => setCurrentMethod({ ...currentMethod, requireScreenshot: e.target.checked })}
-                  />
-                  <label htmlFor="require-proof" className="font-semibold cursor-pointer">
-                    Prompt Customer for Payment Receipt Screenshot
-                  </label>
-                </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="require-proof"
+                        checked={Boolean(currentMethod.requireScreenshot)}
+                        onChange={e => setCurrentMethod({ ...currentMethod, requireScreenshot: e.target.checked })}
+                      />
+                      <label htmlFor="require-proof" className="font-semibold cursor-pointer">
+                        Prompt Customer for Payment Receipt Screenshot
+                      </label>
+                    </div>
+                  </>
+                )}
 
                 <div className="flex items-center gap-2">
                   <input

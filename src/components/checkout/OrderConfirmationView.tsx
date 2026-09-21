@@ -201,17 +201,17 @@ export const OrderConfirmationView: React.FC = () => {
             <span>
               {order.paymentStatus === 'paid'
                 ? order.paymentMethodId === 'safepay'
-                  ? 'Payment Verified via Safepay'
+                  ? 'Live Payment Verified'
                   : 'Payment Verified & Approved'
                 : order.paymentMethodId === 'safepay'
-                ? 'Awaiting Safepay Webhook Confirmation'
+                ? 'Awaiting Live Payment Confirmation'
                 : order.paymentStatus === 'payment_submitted'
                 ? 'Payment Verification in Progress'
                 : 'Pending Direct Payment Verification'}
             </span>
           </div>
 
-          {/* Safepay Payment Specific Information */}
+          {/* Live Online Payment Specific Information */}
           {order.paymentMethodId === 'safepay' && (
             <div
               className={`w-full max-w-lg p-4 rounded-xl border text-xs text-left space-y-1 ${
@@ -225,19 +225,19 @@ export const OrderConfirmationView: React.FC = () => {
                 <span>
                   {order.paymentStatus === 'paid'
                     ? 'Automated Online Payment Confirmed'
-                    : 'Safepay Payment Processing'}
+                    : 'Live Payment Processing'}
                 </span>
               </div>
               <p className="text-[11px] opacity-90">
                 {order.paymentStatus === 'paid'
-                  ? `Cryptographic HMAC webhook verified. Transaction settled successfully${
+                  ? `Transaction settled successfully${
                       order.safepayPaidAt ? ` at ${new Date(order.safepayPaidAt).toLocaleTimeString()}` : ''
                     }.`
-                  : 'If you just completed your checkout on Safepay, please stay on this screen. This page automatically updates as soon as the server verifies the payment webhook.'}
+                  : 'If you just completed your payment, please stay on this screen. This page automatically updates as soon as the secure confirmation is received.'}
               </p>
               {order.safepayTracker && (
                 <p className="font-mono text-[10px] opacity-70 truncate pt-1">
-                  Tracker: {order.safepayTracker}
+                  Reference: {order.safepayTracker}
                 </p>
               )}
             </div>
