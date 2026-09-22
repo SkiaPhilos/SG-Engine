@@ -46,7 +46,11 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours TTL
 
 const VAULT_FILE_PATH = path.join(process.cwd(), '.safepay_vault.json');
 
-function saveToLocalVaultFile(storeId: string, encrypted: EncryptedSafepayPayload): void {
+function saveToLocalVaultFile(
+  storeId: string,
+  encrypted?: EncryptedSafepayPayload | null,
+  meta?: { enabled?: boolean; environment?: 'sandbox' | 'production'; autoConfirmOnPayment?: boolean }
+): void {
   try {
     let data: Record<string, any> = {};
     if (fs.existsSync(VAULT_FILE_PATH)) {
@@ -54,18 +58,31 @@ function saveToLocalVaultFile(storeId: string, encrypted: EncryptedSafepayPayloa
         data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
       } catch {}
     }
-    data[storeId] = encrypted;
+    const current = data[storeId] || data['default'] || {};
+    const updatedEntry: Record<string, any> = {
+      ...current,
+      ...(encrypted || {}),
+      updatedAt: new Date().toISOString(),
+    };
+    if (meta?.enabled !== undefined) updatedEntry.enabled = meta.enabled;
+    if (meta?.environment) updatedEntry.environment = meta.environment;
+    if (meta?.autoConfirmOnPayment !== undefined) updatedEntry.autoConfirmOnPayment = meta.autoConfirmOnPayment;
+
+    data[storeId] = updatedEntry;
+    if (storeId !== 'default') {
+      data['default'] = { ...data['default'], ...updatedEntry };
+    }
     fs.writeFileSync(VAULT_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
   } catch (err) {
     console.warn('[SafepayVault] Notice: could not write to local vault file:', err);
   }
 }
 
-function loadFromLocalVaultFile(storeId: string): EncryptedSafepayPayload | null {
+function loadFromLocalVaultFile(storeId: string): any | null {
   try {
     if (fs.existsSync(VAULT_FILE_PATH)) {
       const data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
-      return data[storeId] || null;
+      return data[storeId] || data['default'] || null;
     }
   } catch (err) {
     console.warn('[SafepayVault] Notice: could not read from local vault file:', err);
@@ -78,6 +95,10 @@ function removeFromLocalVaultFile(storeId: string): void {
     if (fs.existsSync(VAULT_FILE_PATH)) {
       const data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
       delete data[storeId];
+      if (storeId === 'default' || storeId === 'default-store') {
+        delete data['default'];
+        delete data['default-store'];
+      }
       fs.writeFileSync(VAULT_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
     }
   } catch {}
@@ -155,18 +176,31 @@ function encryptPayload(creds: SafepayCredentials, key: Buffer): EncryptedSafepa
   };
 }
 
-function decryptPayload(data: any, key: Buffer): SafepayCredentials {
-  if (!data.iv || !data.authTag || !data.ciphertext) {
-    throw new Error('Malformed encrypted payload in database');
-  }
-  const iv = Buffer.from(data.iv, 'hex');
-  const authTag = Buffer.from(data.authTag, 'hex');
-  const ciphertext = Buffer.from(data.ciphertext, 'hex');
+function tryDecryptPayload(data: any, key: Buffer): SafepayCredentials | null {
+  try {
+    if (!data || !data.iv || !data.authTag || !data.ciphertext) {
+      return null;
+    }
+    const iv = Buffer.from(data.iv, 'hex');
+    const authTag = Buffer.from(data.authTag, 'hex');
+    const ciphertext = Buffer.from(data.ciphertext, 'hex');
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(authTag);
-  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
-  return JSON.parse(decrypted);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+    return JSON.parse(decrypted);
+  } catch (err) {
+    console.warn('[SafepayVault] Decryption warning (using fallback/defaults):', err);
+    return null;
+  }
+}
+
+function decryptPayload(data: any, key: Buffer): SafepayCredentials {
+  const result = tryDecryptPayload(data, key);
+  if (!result) {
+    throw new Error('Malformed or unauthenticated encrypted payload');
+  }
+  return result;
 }
 
 /**
@@ -195,7 +229,7 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   }
 
   // 2. Check in-memory cache
-  const cached = credentialsCache.get(storeId);
+  const cached = credentialsCache.get(storeId) || credentialsCache.get('default');
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
     return cached.creds;
   }
@@ -203,12 +237,17 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   // 3. Obtain master encryption key
   const key = getMasterEncryptionKey();
 
-  // 4. Retrieve encrypted ciphertext from Supabase
+  // 4. Check local vault file first (resilient across server restarts)
+  const localEntry = loadFromLocalVaultFile(storeId);
+  let persistedEnabled: boolean | undefined = localEntry?.enabled;
+  let persistedEnv: 'sandbox' | 'production' = localEntry?.environment || 'sandbox';
+  let persistedAutoConfirm: boolean = localEntry?.autoConfirmOnPayment !== false;
+
+  let encryptedData: any = (localEntry?.iv && localEntry?.ciphertext) ? localEntry : null;
+
+  // 5. Query Supabase store_private_settings / private_settings with isolated try/catches
   try {
     const supabase = getAdminSupabase();
-    let encryptedData: any = null;
-
-    // Try store_private_settings table (matches supabase-migration.sql)
     const storeRes: any = await withDbTimeout(
       supabase
         .from('store_private_settings')
@@ -216,13 +255,18 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
         .eq('store_id', storeId)
         .eq('setting_key', 'safepay')
         .maybeSingle(),
-      3000
+      2500
     );
-
     if (storeRes && !storeRes.error && storeRes.data?.encrypted_payload) {
       encryptedData = storeRes.data.encrypted_payload;
-    } else {
-      // Fallback: try private_settings table with encrypted_data column
+    }
+  } catch (dbErr) {
+    // Non-fatal, local entry or fallback applies
+  }
+
+  if (!encryptedData) {
+    try {
+      const supabase = getAdminSupabase();
       const legacyRes: any = await withDbTimeout(
         supabase
           .from('private_settings')
@@ -230,41 +274,47 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
           .eq('store_id', storeId)
           .eq('setting_key', 'safepay')
           .maybeSingle(),
-        3000
+        2500
       );
-
       if (legacyRes && !legacyRes.error && legacyRes.data?.encrypted_data) {
         encryptedData = legacyRes.data.encrypted_data;
       }
-    }
+    } catch {}
+  }
 
-    if (!encryptedData) {
-      // Check local encrypted vault file backup
-      const localEncrypted = loadFromLocalVaultFile(storeId);
-      if (localEncrypted) {
-        encryptedData = localEncrypted;
+  // Check payment_methods table in Supabase for enabled status if still unset
+  if (persistedEnabled === undefined) {
+    try {
+      const supabase = getAdminSupabase();
+      const { data: pmData } = await withDbTimeout(
+        supabase
+          .from('payment_methods')
+          .select('enabled')
+          .eq('store_id', storeId)
+          .eq('type', 'safepay')
+          .maybeSingle(),
+        2500
+      );
+      if (pmData && typeof pmData.enabled === 'boolean') {
+        persistedEnabled = pmData.enabled;
       }
-    }
+    } catch {}
+  }
 
-    if (!encryptedData) {
-      if (cached && (cached.creds.apiKey || cached.creds.secretKey || cached.creds.webhookSecret)) {
-        return cached.creds;
-      }
-      lastVaultDiagnostic = {
-        status: 'connected',
-        message: 'Safepay Sandbox test mode ready. Toggle enabled to accept test online payments.',
-      };
-      return {
-        apiKey: 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1',
-        secretKey: 'sec_sandbox_test_secret_key',
-        webhookSecret: 'sec_sandbox_webhook_secret',
-        environment: 'sandbox',
-        enabled: false,
-      };
-    }
+  // 6. Decrypt if encrypted payload found
+  let creds: SafepayCredentials | null = null;
+  if (encryptedData) {
+    creds = tryDecryptPayload(encryptedData, key);
+  }
 
-    const creds = decryptPayload(encryptedData, key);
-    // In sandbox mode, ensure fallback test credentials if user hasn't added custom keys yet
+  if (creds) {
+    if (persistedEnabled !== undefined) {
+      creds.enabled = persistedEnabled;
+    }
+    if (localEntry?.environment) {
+      creds.environment = localEntry.environment;
+    }
+    // Sandbox defaults if keys missing
     if (creds.environment === 'sandbox' && (!creds.apiKey || creds.apiKey.length < 5)) {
       creds.apiKey = 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1';
       creds.secretKey = creds.secretKey || 'sec_sandbox_test_secret_key';
@@ -276,20 +326,24 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
       message: 'Credentials active and securely decrypted from vault using AES-256-GCM.',
     };
     return creds;
-  } catch (err: any) {
-    const errMsg = err.message || String(err);
-    lastVaultDiagnostic = {
-      status: 'connected',
-      message: 'Safepay Sandbox test environment active.',
-    };
-    return {
-      apiKey: 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1',
-      secretKey: 'sec_sandbox_test_secret_key',
-      webhookSecret: 'sec_sandbox_webhook_secret',
-      environment: 'sandbox',
-      enabled: false,
-    };
   }
+
+  // 7. Fallback if no custom encrypted keys or decryption tag mismatch
+  const fallbackCreds: SafepayCredentials = {
+    apiKey: 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1',
+    secretKey: 'sec_sandbox_test_secret_key',
+    webhookSecret: 'sec_sandbox_webhook_secret',
+    environment: persistedEnv,
+    enabled: persistedEnabled !== undefined ? persistedEnabled : false,
+    autoConfirmOnPayment: persistedAutoConfirm,
+  };
+
+  credentialsCache.set(storeId, { creds: fallbackCreds, cachedAt: Date.now() });
+  lastVaultDiagnostic = {
+    status: 'connected',
+    message: 'Safepay Sandbox test environment active.',
+  };
+  return fallbackCreds;
 }
 
 function sanitizeKeyInput(val?: string, fallback: string = ''): string {
@@ -333,6 +387,15 @@ export async function clearSafepayCredentials(storeId: string = 'default'): Prom
   } catch (e) {
     // ignore
   }
+  try {
+    await supabase
+      .from('payment_methods')
+      .update({ enabled: false })
+      .eq('store_id', storeId)
+      .eq('type', 'safepay');
+  } catch (e) {
+    // ignore
+  }
   lastVaultDiagnostic = {
     status: 'not_configured',
     message: 'Safepay credentials cleared. Ready for fresh configuration.',
@@ -360,8 +423,8 @@ export async function saveSafepayCredentials(
     apiKey: sanitizeKeyInput(params.apiKey, existing.apiKey),
     secretKey: sanitizeKeyInput(params.secretKey, existing.secretKey),
     webhookSecret: sanitizeKeyInput(params.webhookSecret, existing.webhookSecret),
-    environment: params.environment || existing.environment,
-    enabled: params.enabled !== undefined ? params.enabled : existing.enabled,
+    environment: params.environment || existing.environment || 'sandbox',
+    enabled: params.enabled !== undefined ? Boolean(params.enabled) : Boolean(existing.enabled),
     autoConfirmOnPayment:
       params.autoConfirmOnPayment !== undefined
         ? params.autoConfirmOnPayment
@@ -373,10 +436,23 @@ export async function saveSafepayCredentials(
   const encrypted = encryptPayload(updated, key);
   const supabase = getAdminSupabase();
 
+  // 1. Immediately cache in memory
+  credentialsCache.set(storeId, { creds: updated, cachedAt: Date.now() });
+  if (storeId !== 'default') {
+    credentialsCache.set('default', { creds: updated, cachedAt: Date.now() });
+  }
+
+  // 2. Persist to local vault file on disk (both ciphertext AND config metadata)
+  saveToLocalVaultFile(storeId, encrypted, {
+    enabled: updated.enabled,
+    environment: updated.environment,
+    autoConfirmOnPayment: updated.autoConfirmOnPayment,
+  });
+
+  // 3. Persist to Supabase tables
   let savedToDb = false;
   let lastDbError: any = null;
 
-  // 1. Try store_private_settings table (matches supabase-migration.sql)
   try {
     const storeRes: any = await withDbTimeout(
       supabase
@@ -401,7 +477,6 @@ export async function saveSafepayCredentials(
     lastDbError = e;
   }
 
-  // 2. Fallback: try private_settings table with encrypted_data column
   if (!savedToDb) {
     try {
       const fallbackRes: any = await withDbTimeout(
@@ -429,11 +504,33 @@ export async function saveSafepayCredentials(
     }
   }
 
-  // Always update in-memory cache so credentials take effect immediately
-  credentialsCache.set(storeId, { creds: updated, cachedAt: Date.now() });
-
-  // Always save encrypted payload to local vault file as durable backup
-  saveToLocalVaultFile(storeId, encrypted);
+  // 4. Synchronize payment_methods table so storefront checkout displays Safepay accurately
+  try {
+    await withDbTimeout(
+      supabase.from('payment_methods').upsert(
+        {
+          id: `pm_safepay_${storeId}`,
+          store_id: storeId,
+          type: 'safepay',
+          display_name: 'Live Online Payment (Safepay)',
+          account_title: 'Safepay Automated Gateway',
+          account_number: updated.environment === 'production' ? 'Production Hosted Gateway' : 'Sandbox Test Gateway',
+          iban: '',
+          bank_name: 'Safepay Checkout',
+          instructions: 'Instant checkout via Visa, Mastercard, PayPak, Raast, and digital wallets.',
+          require_screenshot: false,
+          require_transaction_reference: false,
+          enabled: updated.enabled,
+          sort_order: 99,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      ),
+      3000
+    );
+  } catch (pmErr) {
+    console.warn('[SafepayVault] payment_methods upsert notice:', pmErr);
+  }
 
   if (savedToDb) {
     lastVaultDiagnostic = {
@@ -444,7 +541,7 @@ export async function saveSafepayCredentials(
     console.warn('[SafepayVault] Database persistence notice:', lastDbError?.message || lastDbError);
     lastVaultDiagnostic = {
       status: 'connected',
-      message: 'Credentials active in secure server memory. (Note: Run supabase-migration.sql in Supabase to persist store_private_settings across container restarts).',
+      message: 'Credentials active in secure server memory and vault backup.',
     };
   }
 }

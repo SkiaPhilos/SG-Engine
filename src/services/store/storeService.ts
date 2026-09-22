@@ -838,9 +838,37 @@ export async function createOrder(
 
   try {
     const row = fromOrder(order);
-    const { error } = await supabase
+    let { error } = await supabase
       .from('orders')
       .insert(row);
+
+    if (error && (error.message?.includes('column') || error.message?.includes('schema cache') || error.code === 'PGRST204')) {
+      console.warn('createOrder retrying with schema-safe fallback row:', error.message);
+      const fallbackRow: Record<string, any> = {
+        id: row.id,
+        store_id: row.store_id,
+        order_number: row.order_number,
+        access_token: row.access_token,
+        customer: row.customer,
+        items: row.items,
+        applied_offers: row.applied_offers,
+        subtotal: row.subtotal,
+        discount_total: row.discount_total,
+        delivery_fee: row.delivery_fee,
+        total: row.total,
+        payment_method_id: row.payment_method_id,
+        payment_method_name: row.payment_method_name,
+        payment_status: row.payment_status,
+        order_status: row.order_status,
+        transaction_reference: row.transaction_reference,
+        payment_proof_url: row.payment_proof_url,
+        safepay_tracker: row.safepay_tracker,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      };
+      const retryRes = await supabase.from('orders').insert(fallbackRow);
+      error = retryRes.error;
+    }
 
     if (error) {
       console.error('Supabase createOrder error:', error.message);

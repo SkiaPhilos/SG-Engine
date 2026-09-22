@@ -90,17 +90,18 @@ export const OrderConfirmationView: React.FC = () => {
   }, [activeOrderId, storeId]);
 
   const handleUpdateProof = async () => {
-    if (!activeOrderId || (!tidInput.trim() && !proofImage)) return;
+    const targetOrderId = activeOrderId || order?.id;
+    if (!targetOrderId || (!tidInput.trim() && !proofImage)) return;
     setIsUpdating(true);
     try {
       await updateOrderPaymentProof(
         storeId,
-        activeOrderId,
+        targetOrderId,
         proofImage || undefined,
         tidInput.trim() || undefined,
         order?.accessToken
       );
-      const updated = await getOrderById(storeId, activeOrderId);
+      const updated = await getOrderById(storeId, targetOrderId, order?.accessToken);
       setOrder(updated);
     } catch (e) {
       console.error(e);

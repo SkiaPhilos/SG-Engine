@@ -279,7 +279,7 @@ export const CheckoutView: React.FC = () => {
       }
 
       // 3B. Pay Live Online (Instant Safepay)
-      if (paymentRail === 'advance' && advanceMode === 'safepay' && safepayStatus?.enabled) {
+      if (paymentRail === 'advance' && advanceMode === 'safepay') {
         const orderId = await createOrder(storeId, {
           storeId,
           orderNumber,
@@ -325,7 +325,20 @@ export const CheckoutView: React.FC = () => {
         clearCart();
 
         if (trackerRes?.checkoutUrl) {
-          window.location.href = trackerRes.checkoutUrl;
+          if (trackerRes.checkoutUrl.includes('safepay_sandbox_paid=true') || trackerRes.checkoutUrl.startsWith(host)) {
+            setCurrentView('order_confirmation');
+            window.location.hash = `#order_confirmation?orderId=${orderId}`;
+          } else {
+            try {
+              if (window.top && window.top !== window) {
+                window.top.location.href = trackerRes.checkoutUrl;
+              } else {
+                window.location.href = trackerRes.checkoutUrl;
+              }
+            } catch {
+              window.location.href = trackerRes.checkoutUrl;
+            }
+          }
         } else {
           setCurrentView('order_confirmation');
         }

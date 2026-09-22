@@ -394,9 +394,9 @@ export function toOrder(row: any): Order {
     discountTotal: Number(row.discount_total) || 0,
     deliveryFee: Number(row.delivery_fee) || 0,
     fulfillmentType: (row.fulfillment_type as any) || (row.customer?.fulfillmentType as any) || 'delivery',
-    taxTotal: row.tax_total !== undefined && row.tax_total !== null ? Number(row.tax_total) : undefined,
-    taxCategory: row.tax_category || undefined,
-    taxPercentage: row.tax_percentage !== undefined && row.tax_percentage !== null ? Number(row.tax_percentage) : undefined,
+    taxTotal: row.tax_total !== undefined && row.tax_total !== null ? Number(row.tax_total) : (row.customer?.taxTotal !== undefined ? Number(row.customer.taxTotal) : undefined),
+    taxCategory: row.tax_category || row.customer?.taxCategory || undefined,
+    taxPercentage: row.tax_percentage !== undefined && row.tax_percentage !== null ? Number(row.tax_percentage) : (row.customer?.taxPercentage !== undefined ? Number(row.customer.taxPercentage) : undefined),
     total: Number(row.total) || 0,
     paymentMethodId: row.payment_method_id,
     paymentMethodName: row.payment_method_name,
@@ -420,16 +420,22 @@ export function fromOrder(ord: Partial<Order>): Partial<DbOrderRow> {
   if (ord.storeId !== undefined) row.store_id = ord.storeId;
   if (ord.orderNumber !== undefined) row.order_number = ord.orderNumber;
   if (ord.accessToken !== undefined) row.access_token = ord.accessToken;
-  if (ord.customer !== undefined) row.customer = ord.customer;
+
+  // Safely embed fulfillment & tax fields inside customer JSONB so any DB schema accepts it without error
+  const customerObj = {
+    ...(ord.customer || {}),
+    ...(ord.fulfillmentType !== undefined ? { fulfillmentType: ord.fulfillmentType } : {}),
+    ...(ord.taxTotal !== undefined ? { taxTotal: ord.taxTotal } : {}),
+    ...(ord.taxCategory !== undefined ? { taxCategory: ord.taxCategory } : {}),
+    ...(ord.taxPercentage !== undefined ? { taxPercentage: ord.taxPercentage } : {}),
+  };
+  row.customer = customerObj;
+
   if (ord.items !== undefined) row.items = ord.items;
   if (ord.appliedOffers !== undefined) row.applied_offers = ord.appliedOffers;
   if (ord.subtotal !== undefined) row.subtotal = ord.subtotal;
   if (ord.discountTotal !== undefined) row.discount_total = ord.discountTotal;
   if (ord.deliveryFee !== undefined) row.delivery_fee = ord.deliveryFee;
-  if (ord.fulfillmentType !== undefined) row.fulfillment_type = ord.fulfillmentType;
-  if (ord.taxTotal !== undefined) row.tax_total = ord.taxTotal;
-  if (ord.taxCategory !== undefined) row.tax_category = ord.taxCategory || null;
-  if (ord.taxPercentage !== undefined) row.tax_percentage = ord.taxPercentage;
   if (ord.total !== undefined) row.total = ord.total;
   if (ord.paymentMethodId !== undefined) row.payment_method_id = ord.paymentMethodId;
   if (ord.paymentMethodName !== undefined) row.payment_method_name = ord.paymentMethodName;

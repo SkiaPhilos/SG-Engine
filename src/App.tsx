@@ -27,9 +27,13 @@ const AppContent: React.FC = () => {
 
       if (isAdminRoute) {
         setCurrentView(isAdmin ? 'admin' : 'login');
-      } else if (hash === '#checkout' || path === '/checkout') {
+      } else if (hash === '#checkout' || path === '/checkout' || hash.startsWith('#checkout')) {
         setCurrentView('checkout');
-      } else if (hash === '#order_confirmation' || hash === '#order-confirmation') {
+      } else if (
+        hash.startsWith('#order_confirmation') ||
+        hash.startsWith('#order-confirmation') ||
+        path.startsWith('/order-confirmation')
+      ) {
         setCurrentView('order_confirmation');
       }
     };
