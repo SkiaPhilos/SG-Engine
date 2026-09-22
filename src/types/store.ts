@@ -165,6 +165,10 @@ export interface Order {
   subtotal: number;
   discountTotal: number;
   deliveryFee: number;
+  fulfillmentType?: 'delivery' | 'pickup';
+  taxTotal?: number;
+  taxCategory?: string;
+  taxPercentage?: number;
   total: number;
   paymentMethodId: string;
   paymentMethodName: string;
@@ -278,8 +282,20 @@ export type HomepageSectionConfig = HomepageSection;
 export interface DeliveryConfig {
   enabled: boolean;
   flatFee: number;
+  cityFee?: number; // Delivery charges in owner's city (Rs. X)
+  countryFee?: number; // Delivery charges elsewhere in owner's country (Rs. Y)
+  ownerCity?: string; // Owner's city e.g. "Lahore"
+  ownerCountry?: string; // Owner's country e.g. "Pakistan"
+  shopAddress?: string; // Shop pickup location e.g. "My Shop Address"
+  pickupEnabled?: boolean; // Whether customers can choose store pickup
   freeDeliveryThreshold?: number; // orders above this get free delivery
   estimateText?: string;
+}
+
+export interface TaxConfig {
+  enabled: boolean;
+  category: string; // e.g. "GST / Sales Tax"
+  percentage: number; // e.g. 5 (5%)
 }
 
 export interface CheckoutConfig {
@@ -317,6 +333,7 @@ export interface StoreConfig {
   productDisplayPreset: ProductDisplayPreset;
   homepageSections: HomepageSection[];
   deliveryConfig: DeliveryConfig;
+  taxConfig?: TaxConfig;
   checkoutConfig: CheckoutConfig;
   searchEnabled: boolean;
   isConfigured: boolean; // Flag to indicate if owner ran through initial setup

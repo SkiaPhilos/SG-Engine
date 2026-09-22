@@ -1,4 +1,4 @@
-import { Product, Offer, DeliveryConfig, CartItem, OrderItem, AppliedOfferSummary } from '../../types/store';
+import { Product, Offer, DeliveryConfig, TaxConfig, CartItem, OrderItem, AppliedOfferSummary } from '../../types/store';
 
 export interface PricingCalculationResult {
   items: OrderItem[];
@@ -6,6 +6,10 @@ export interface PricingCalculationResult {
   subtotal: number;
   discountTotal: number;
   deliveryFee: number;
+  taxTotal: number;
+  taxCategory?: string;
+  taxPercentage?: number;
+  fulfillmentType?: 'delivery' | 'pickup';
   total: number;
   qualifiesForFreeDelivery: boolean;
   freeDeliveryThresholdRemaining?: number;
@@ -40,7 +44,12 @@ export function calculateOrderTotals(
   cartItems: CartItem[],
   products: Product[],
   offers: Offer[],
-  deliveryConfig: DeliveryConfig
+  deliveryConfig: DeliveryConfig,
+  options?: {
+    fulfillmentType?: 'delivery' | 'pickup';
+    customerCity?: string;
+    taxConfig?: TaxConfig;
+  }
 ): PricingCalculationResult {
   const productMap = new Map<string, Product>();
   products.forEach(p => productMap.set(p.id, p));
@@ -186,13 +195,31 @@ export function calculateOrderTotals(
     }
   }
 
-  // 3. Calculate delivery fee
+  // 3. Calculate delivery fee based on fulfillment type & destination city
   let deliveryFee = 0;
   let qualifiesForFreeDelivery = false;
   let freeDeliveryThresholdRemaining: number | undefined;
 
-  if (deliveryConfig.enabled) {
-    const flatFee = Math.max(0, Number(deliveryConfig.flatFee) || 0);
+  const isPickup = options?.fulfillmentType === 'pickup';
+
+  if (!isPickup && deliveryConfig.enabled !== false) {
+    const defaultFee = Math.max(0, Number(deliveryConfig.flatFee) || 200);
+    const cityFee = deliveryConfig.cityFee !== undefined ? Math.max(0, Number(deliveryConfig.cityFee)) : 150;
+    const countryFee = deliveryConfig.countryFee !== undefined ? Math.max(0, Number(deliveryConfig.countryFee)) : 250;
+    const ownerCity = (deliveryConfig.ownerCity || '').trim().toLowerCase();
+    const customerCity = (options?.customerCity || '').trim().toLowerCase();
+
+    // Check if customer is in the store owner's city
+    const isOwnerCity = customerCity.length > 0 && ownerCity.length > 0 && (
+      customerCity === ownerCity ||
+      customerCity.includes(ownerCity) ||
+      ownerCity.includes(customerCity)
+    );
+
+    const applicableFee = customerCity.length > 0
+      ? (isOwnerCity ? cityFee : countryFee)
+      : defaultFee;
+
     const threshold = deliveryConfig.freeDeliveryThreshold;
 
     if (threshold !== undefined && threshold > 0) {
@@ -200,15 +227,26 @@ export function calculateOrderTotals(
         deliveryFee = 0;
         qualifiesForFreeDelivery = true;
       } else {
-        deliveryFee = flatFee;
+        deliveryFee = applicableFee;
         freeDeliveryThresholdRemaining = Math.max(0, threshold - subtotal);
       }
     } else {
-      deliveryFee = flatFee;
+      deliveryFee = applicableFee;
     }
   }
 
-  const finalTotal = Math.max(0, subtotal + deliveryFee);
+  // 4. Calculate Taxes
+  let taxTotal = 0;
+  let taxCategory = options?.taxConfig?.category || 'GST / Sales Tax';
+  let taxPercentage = 0;
+
+  if (options?.taxConfig?.enabled && Number(options.taxConfig.percentage) > 0) {
+    taxPercentage = Number(options.taxConfig.percentage);
+    taxCategory = options.taxConfig.category || 'GST / Sales Tax';
+    taxTotal = Math.round(subtotal * (taxPercentage / 100));
+  }
+
+  const finalTotal = Math.max(0, subtotal + deliveryFee + taxTotal);
 
   return {
     items,
@@ -216,6 +254,10 @@ export function calculateOrderTotals(
     subtotal,
     discountTotal: totalIndividualDiscount + offerSavingsTotal,
     deliveryFee,
+    taxTotal,
+    taxCategory,
+    taxPercentage,
+    fulfillmentType: options?.fulfillmentType || 'delivery',
     total: finalTotal,
     qualifiesForFreeDelivery,
     freeDeliveryThresholdRemaining,

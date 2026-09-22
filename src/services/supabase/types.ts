@@ -121,6 +121,10 @@ export interface DbOrderRow {
   subtotal: number | string;
   discount_total: number | string;
   delivery_fee: number | string;
+  fulfillment_type?: string | null;
+  tax_total?: number | string | null;
+  tax_category?: string | null;
+  tax_percentage?: number | string | null;
   total: number | string;
   payment_method_id: string;
   payment_method_name: string;
@@ -157,7 +161,23 @@ export function toStoreConfig(row: DbStoreRow): StoreConfig {
     themeCustomColors: row.theme_custom_colors || undefined,
     productDisplayPreset: (row.product_display_preset as any) || 'standard-grid',
     homepageSections: row.homepage_sections || [],
-    deliveryConfig: row.delivery_config || { enabled: true, flatFee: 200 },
+    deliveryConfig: {
+      enabled: row.delivery_config?.enabled !== false,
+      flatFee: Number(row.delivery_config?.flatFee) || 250,
+      cityFee: Number(row.delivery_config?.cityFee) || 150,
+      countryFee: Number(row.delivery_config?.countryFee) || 250,
+      ownerCity: row.delivery_config?.ownerCity || 'Lahore',
+      ownerCountry: row.delivery_config?.ownerCountry || 'Pakistan',
+      shopAddress: row.delivery_config?.shopAddress || 'My Shop Address',
+      pickupEnabled: row.delivery_config?.pickupEnabled !== false,
+      freeDeliveryThreshold: row.delivery_config?.freeDeliveryThreshold !== undefined ? Number(row.delivery_config.freeDeliveryThreshold) : 3000,
+      estimateText: row.delivery_config?.estimateText || '2-4 business days nationwide',
+    },
+    taxConfig: row.delivery_config?.taxConfig || (row as any).tax_config || {
+      enabled: false,
+      category: 'GST / Sales Tax',
+      percentage: 0,
+    },
     checkoutConfig: row.checkout_config || {
       requirePhone: true,
       requireEmail: true,
@@ -191,7 +211,12 @@ export function fromStoreConfig(config: Partial<StoreConfig>): Partial<DbStoreRo
   if (config.themeCustomColors !== undefined) row.theme_custom_colors = config.themeCustomColors || null;
   if (config.productDisplayPreset !== undefined) row.product_display_preset = config.productDisplayPreset;
   if (config.homepageSections !== undefined) row.homepage_sections = config.homepageSections;
-  if (config.deliveryConfig !== undefined) row.delivery_config = config.deliveryConfig;
+  if (config.deliveryConfig !== undefined || config.taxConfig !== undefined) {
+    row.delivery_config = {
+      ...(config.deliveryConfig || {}),
+      taxConfig: config.taxConfig,
+    };
+  }
   if (config.checkoutConfig !== undefined) row.checkout_config = config.checkoutConfig;
   if (config.searchEnabled !== undefined) row.search_enabled = config.searchEnabled;
   if (config.isConfigured !== undefined) row.is_configured = config.isConfigured;
@@ -368,6 +393,10 @@ export function toOrder(row: any): Order {
     subtotal: Number(row.subtotal) || 0,
     discountTotal: Number(row.discount_total) || 0,
     deliveryFee: Number(row.delivery_fee) || 0,
+    fulfillmentType: (row.fulfillment_type as any) || (row.customer?.fulfillmentType as any) || 'delivery',
+    taxTotal: row.tax_total !== undefined && row.tax_total !== null ? Number(row.tax_total) : undefined,
+    taxCategory: row.tax_category || undefined,
+    taxPercentage: row.tax_percentage !== undefined && row.tax_percentage !== null ? Number(row.tax_percentage) : undefined,
     total: Number(row.total) || 0,
     paymentMethodId: row.payment_method_id,
     paymentMethodName: row.payment_method_name,
@@ -397,6 +426,10 @@ export function fromOrder(ord: Partial<Order>): Partial<DbOrderRow> {
   if (ord.subtotal !== undefined) row.subtotal = ord.subtotal;
   if (ord.discountTotal !== undefined) row.discount_total = ord.discountTotal;
   if (ord.deliveryFee !== undefined) row.delivery_fee = ord.deliveryFee;
+  if (ord.fulfillmentType !== undefined) row.fulfillment_type = ord.fulfillmentType;
+  if (ord.taxTotal !== undefined) row.tax_total = ord.taxTotal;
+  if (ord.taxCategory !== undefined) row.tax_category = ord.taxCategory || null;
+  if (ord.taxPercentage !== undefined) row.tax_percentage = ord.taxPercentage;
   if (ord.total !== undefined) row.total = ord.total;
   if (ord.paymentMethodId !== undefined) row.payment_method_id = ord.paymentMethodId;
   if (ord.paymentMethodName !== undefined) row.payment_method_name = ord.paymentMethodName;

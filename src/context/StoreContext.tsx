@@ -183,8 +183,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Central pricing calculation
   const pricing = useMemo(() => {
-    return calculateOrderTotals(cart, products, offers, config.deliveryConfig);
-  }, [cart, products, offers, config.deliveryConfig]);
+    return calculateOrderTotals(cart, products, offers, config.deliveryConfig, {
+      taxConfig: config.taxConfig,
+    });
+  }, [cart, products, offers, config.deliveryConfig, config.taxConfig]);
 
   // Cart operations
   const addToCart = (productId: string, quantity = 1, offerId?: string) => {

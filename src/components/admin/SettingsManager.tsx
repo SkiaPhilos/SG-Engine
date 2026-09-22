@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Save, Check, Truck, Shield, Phone, Mail, Store } from 'lucide-react';
+import { Settings, Save, Check, Truck, Shield, Phone, Mail, Store, MapPin, Percent, Receipt } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { saveStoreConfig } from '../../services/store/storeService';
 import { ImageUpload } from '../common/ImageUpload';
@@ -18,11 +18,22 @@ export const SettingsManager: React.FC = () => {
   const [contactPhone, setContactPhone] = useState(config.contactPhone || '');
   const [whatsappNumber, setWhatsappNumber] = useState(config.whatsappNumber || '');
 
-  // Delivery
+  // Location & Shop Pickup
+  const [ownerCity, setOwnerCity] = useState(config.deliveryConfig?.ownerCity || 'Lahore');
+  const [shopAddress, setShopAddress] = useState(config.deliveryConfig?.shopAddress || 'My Shop Address');
+  const [pickupEnabled, setPickupEnabled] = useState(config.deliveryConfig?.pickupEnabled !== false);
+
+  // Delivery Rates (Owner City vs Countrywide)
   const [deliveryEnabled, setDeliveryEnabled] = useState(config.deliveryConfig?.enabled !== false);
-  const [flatFee, setFlatFee] = useState(String(config.deliveryConfig?.flatFee ?? 250));
+  const [cityFee, setCityFee] = useState(String(config.deliveryConfig?.cityFee ?? 150));
+  const [countryFee, setCountryFee] = useState(String(config.deliveryConfig?.countryFee ?? 250));
   const [freeThreshold, setFreeThreshold] = useState(String(config.deliveryConfig?.freeDeliveryThreshold ?? 3000));
   const [estimateText, setEstimateText] = useState(config.deliveryConfig?.estimateText || '2-4 business days nationwide');
+
+  // Taxes
+  const [taxEnabled, setTaxEnabled] = useState(Boolean(config.taxConfig?.enabled));
+  const [taxCategory, setTaxCategory] = useState(config.taxConfig?.category || 'GST / Sales Tax');
+  const [taxPercentage, setTaxPercentage] = useState(String(config.taxConfig?.percentage ?? 5));
 
   // Checkout
   const [requirePhone, setRequirePhone] = useState(config.checkoutConfig?.requirePhone !== false);
@@ -50,9 +61,19 @@ export const SettingsManager: React.FC = () => {
         whatsappNumber: whatsappNumber.trim(),
         deliveryConfig: {
           enabled: deliveryEnabled,
-          flatFee: Number(flatFee) || 0,
+          flatFee: Number(countryFee) || 250,
+          cityFee: Number(cityFee) || 0,
+          countryFee: Number(countryFee) || 0,
+          ownerCity: ownerCity.trim() || 'Lahore',
+          shopAddress: shopAddress.trim() || 'My Shop Address',
+          pickupEnabled,
           freeDeliveryThreshold: Number(freeThreshold) || 0,
           estimateText: estimateText.trim(),
+        },
+        taxConfig: {
+          enabled: taxEnabled,
+          category: taxCategory.trim() || 'GST / Sales Tax',
+          percentage: Number(taxPercentage) || 0,
         },
         checkoutConfig: {
           requirePhone,
@@ -163,31 +184,126 @@ export const SettingsManager: React.FC = () => {
         </div>
       </div>
 
-      {/* Delivery Rules */}
+      {/* Store Location & Shop Pickup */}
       <div
         className="p-6 rounded-2xl border space-y-4 shadow-xs"
         style={{ borderColor: themeColors.border, backgroundColor: themeColors.surface }}
       >
-        <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: themeColors.text }}>
-          <Truck className="w-4 h-4 text-emerald-600" />
-          <span>Delivery &amp; Shipping Rates</span>
-        </h3>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-          <div>
-            <label className="block font-semibold mb-1">Standard Delivery Fee ({currencySymbol})</label>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: themeColors.text }}>
+            <MapPin className="w-4 h-4 text-indigo-600" />
+            <span>Store Location &amp; Customer Pickup</span>
+          </h3>
+          <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
             <input
-              type="number"
-              min={0}
-              value={flatFee}
-              onChange={e => setFlatFee(e.target.value)}
+              type="checkbox"
+              checked={pickupEnabled}
+              onChange={e => setPickupEnabled(e.target.checked)}
+              className="rounded"
+            />
+            <span>Enable In-Store Pickup Option</span>
+          </label>
+        </div>
+
+        <p className="text-xs text-neutral-500">
+          When customers choose "Store Pickup" at checkout, no delivery fee is added, and Cash on Delivery is disabled so you only hold orders after advance payment or customer collection.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+          <div>
+            <label className="block font-semibold mb-1">Owner / Store City</label>
+            <input
+              type="text"
+              value={ownerCity}
+              onChange={e => setOwnerCity(e.target.value)}
+              placeholder="e.g. Lahore, Karachi, Islamabad"
               className="w-full px-3 py-2 rounded-xl border outline-none"
               style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
             />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Used to apply discounted local city delivery rates.
+            </span>
           </div>
 
           <div>
-            <label className="block font-semibold mb-1">Free Delivery Threshold ({currencySymbol})</label>
+            <label className="block font-semibold mb-1">Shop Address for Customer Collection</label>
+            <input
+              type="text"
+              value={shopAddress}
+              onChange={e => setShopAddress(e.target.value)}
+              placeholder="e.g. Shop # 4, Main Commercial Market, Lahore"
+              className="w-full px-3 py-2 rounded-xl border outline-none"
+              style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+            />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Displayed to customers when they choose Store Pickup. Default: "My Shop Address".
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Location-Based Delivery & Shipping Rates */}
+      <div
+        className="p-6 rounded-2xl border space-y-4 shadow-xs"
+        style={{ borderColor: themeColors.border, backgroundColor: themeColors.surface }}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: themeColors.text }}>
+            <Truck className="w-4 h-4 text-emerald-600" />
+            <span>Delivery &amp; Courier Charges</span>
+          </h3>
+          <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+            <input
+              type="checkbox"
+              checked={deliveryEnabled}
+              onChange={e => setDeliveryEnabled(e.target.checked)}
+              className="rounded"
+            />
+            <span>Enable Home Delivery</span>
+          </label>
+        </div>
+
+        <p className="text-xs text-neutral-500">
+          Set custom delivery rates for customers in your city ({ownerCity || 'Owner City'}) vs elsewhere in Pakistan.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+          <div>
+            <label className="block font-semibold mb-1">
+              In {ownerCity || 'Owner City'} ({currencySymbol})
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={cityFee}
+              onChange={e => setCityFee(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border outline-none font-bold"
+              style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+            />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Local intra-city delivery charge (Rs. X)
+            </span>
+          </div>
+
+          <div>
+            <label className="block font-semibold mb-1">
+              Elsewhere Nationwide ({currencySymbol})
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={countryFee}
+              onChange={e => setCountryFee(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border outline-none font-bold"
+              style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+            />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Courier fee for all other cities (Rs. Y)
+            </span>
+          </div>
+
+          <div>
+            <label className="block font-semibold mb-1">Free Delivery Above ({currencySymbol})</label>
             <input
               type="number"
               min={0}
@@ -196,10 +312,13 @@ export const SettingsManager: React.FC = () => {
               className="w-full px-3 py-2 rounded-xl border outline-none"
               style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
             />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Orders at or above this get free delivery.
+            </span>
           </div>
 
           <div>
-            <label className="block font-semibold mb-1">Estimated Delivery Timeline</label>
+            <label className="block font-semibold mb-1">Estimated Timeline</label>
             <input
               type="text"
               value={estimateText}
@@ -207,6 +326,75 @@ export const SettingsManager: React.FC = () => {
               className="w-full px-3 py-2 rounded-xl border outline-none"
               style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
             />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              e.g. 2-4 business days
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Taxes & GST Configuration */}
+      <div
+        className="p-6 rounded-2xl border space-y-4 shadow-xs"
+        style={{ borderColor: themeColors.border, backgroundColor: themeColors.surface }}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: themeColors.text }}>
+            <Receipt className="w-4 h-4 text-amber-600" />
+            <span>Taxes &amp; Sales Tax (GST)</span>
+          </h3>
+          <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+            <input
+              type="checkbox"
+              checked={taxEnabled}
+              onChange={e => setTaxEnabled(e.target.checked)}
+              className="rounded"
+            />
+            <span>Apply Taxes at Checkout</span>
+          </label>
+        </div>
+
+        <p className="text-xs text-neutral-500">
+          When enabled, tax is automatically calculated as a percentage of the order subtotal and itemized at checkout.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+          <div>
+            <label className="block font-semibold mb-1">Tax Category / Label</label>
+            <input
+              type="text"
+              value={taxCategory}
+              onChange={e => setTaxCategory(e.target.value)}
+              placeholder="e.g. Sales Tax (GST), Provincial Sales Tax, VAT"
+              disabled={!taxEnabled}
+              className={`w-full px-3 py-2 rounded-xl border outline-none ${!taxEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+              style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+            />
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Label displayed to customer on checkout summary and receipts.
+            </span>
+          </div>
+
+          <div>
+            <label className="block font-semibold mb-1">Tax Percentage (%)</label>
+            <div className="relative">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                value={taxPercentage}
+                onChange={e => setTaxPercentage(e.target.value)}
+                disabled={!taxEnabled}
+                placeholder="e.g. 5 or 18"
+                className={`w-full px-3 py-2 rounded-xl border outline-none pr-8 font-bold ${!taxEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}
+              />
+              <span className="absolute right-3 top-2.5 text-neutral-400 font-bold">%</span>
+            </div>
+            <span className="text-[11px] text-neutral-400 mt-1 block">
+              Percentage calculated on order subtotal after discounts.
+            </span>
           </div>
         </div>
       </div>

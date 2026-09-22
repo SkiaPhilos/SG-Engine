@@ -148,8 +148,18 @@ export const DEFAULT_STORE_CONFIG: StoreConfig = {
   deliveryConfig: {
     enabled: true,
     flatFee: 250,
+    cityFee: 150,
+    countryFee: 250,
+    ownerCity: 'Lahore',
+    shopAddress: 'My Shop Address',
+    pickupEnabled: true,
     freeDeliveryThreshold: 3000,
     estimateText: '2-4 business days',
+  },
+  taxConfig: {
+    enabled: false,
+    category: 'GST / Sales Tax',
+    percentage: 0,
   },
   checkoutConfig: {
     requirePhone: true,
