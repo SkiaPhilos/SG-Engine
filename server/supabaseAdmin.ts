@@ -2,9 +2,6 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 let adminSupabaseInstance: SupabaseClient | null = null;
 
-const DEFAULT_SUPABASE_URL = 'https://herdyennsqwjusuikmis.supabase.co';
-const DEFAULT_FALLBACK_KEY = 'sb_publishable_sxnVYuDmAo6QwI0c7nOQKw_UQJ9QAGa';
-
 /**
  * Server-side administrative Supabase client using SUPABASE_SERVICE_ROLE_KEY, SUPABASE_SECRET_KEY, or anon key.
  * Bypasses RLS with service_role or operates with backend authority.
@@ -14,18 +11,27 @@ export function getAdminSupabase(): SupabaseClient {
     const supabaseUrl = (
       process.env.SUPABASE_URL ||
       process.env.VITE_SUPABASE_URL ||
-      DEFAULT_SUPABASE_URL
+      ''
     ).trim();
 
     const serviceRoleKey = (
       process.env.SUPABASE_SECRET_KEY ||
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.VITE_SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.VITE_SUPABASE_ANON_KEY ||
       process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-      DEFAULT_FALLBACK_KEY
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      ''
     ).trim();
+
+    if (!supabaseUrl || !serviceRoleKey) {
+      console.warn(
+        '[SupabaseAdmin] SUPABASE_URL and SUPABASE_SECRET_KEY are not configured in environment.'
+      );
+      adminSupabaseInstance = createClient('https://unconfigured.supabase.co', 'placeholder_key', {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      return adminSupabaseInstance;
+    }
 
     adminSupabaseInstance = createClient(supabaseUrl, serviceRoleKey, {
       auth: {

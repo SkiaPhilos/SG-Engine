@@ -412,6 +412,22 @@ export function toOrder(row: any): Order {
   };
 }
 
+function isValidUUID(val: any): boolean {
+  if (typeof val !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+}
+
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function fromOrder(ord: Partial<Order>): Partial<DbOrderRow> {
   const row: Partial<DbOrderRow> = {
     updated_at: new Date().toISOString(),
@@ -419,7 +435,11 @@ export function fromOrder(ord: Partial<Order>): Partial<DbOrderRow> {
   if (ord.id !== undefined) row.id = ord.id;
   if (ord.storeId !== undefined) row.store_id = ord.storeId;
   if (ord.orderNumber !== undefined) row.order_number = ord.orderNumber;
-  if (ord.accessToken !== undefined) row.access_token = ord.accessToken;
+  if (ord.accessToken !== undefined) {
+    row.access_token = isValidUUID(ord.accessToken) ? ord.accessToken : generateUUID();
+  } else {
+    row.access_token = generateUUID();
+  }
 
   // Safely embed fulfillment & tax fields inside customer JSONB so any DB schema accepts it without error
   const customerObj = {

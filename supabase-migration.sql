@@ -308,15 +308,8 @@ SECURITY DEFINER
 STABLE
 AS $$
   SELECT EXISTS (
-    SELECT 1 FROM auth.users u
-    WHERE u.id = auth.uid()
-    AND (
-      lower(u.email) = 'maniacphilos@gmail.com'
-      OR EXISTS (
-        SELECT 1 FROM public.admins a
-        WHERE a.admin_uid = auth.uid()
-      )
-    )
+    SELECT 1 FROM public.admins a
+    WHERE a.admin_uid = auth.uid()
   );
 $$;
 
@@ -348,7 +341,7 @@ CREATE POLICY "Admins write by admin or bootstrap" ON public.admins
   FOR ALL TO authenticated
   USING (
     public.is_admin() OR 
-    (admin_uid = auth.uid() AND lower(auth.jwt()->>'email') = 'maniacphilos@gmail.com')
+    (NOT EXISTS (SELECT 1 FROM public.admins))
   );
 
 -- 5.2 Stores RLS (Public read; Admin write)
@@ -415,7 +408,12 @@ CREATE POLICY "Orders admin read" ON public.orders
 DROP POLICY IF EXISTS "Orders public insert" ON public.orders;
 CREATE POLICY "Orders public insert" ON public.orders
   FOR INSERT TO anon, authenticated
-  WITH CHECK (true);
+  WITH CHECK (
+    payment_status IN ('unpaid', 'pending_verification')
+    AND order_status = 'pending'
+    AND total >= 0
+    AND subtotal >= 0
+  );
 
 DROP POLICY IF EXISTS "Orders admin update" ON public.orders;
 CREATE POLICY "Orders admin update" ON public.orders

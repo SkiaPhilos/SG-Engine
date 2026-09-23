@@ -13,8 +13,8 @@ function sanitizeEnv(val: any): string {
   return clean;
 }
 
-const defaultSupabaseUrl = 'https://herdyennsqwjusuikmis.supabase.co';
-const defaultPublishableKey = 'sb_publishable_sxnVYuDmAo6QwI0c7nOQKw_UQJ9QAGa';
+const defaultSupabaseUrl = '';
+const defaultPublishableKey = '';
 
 const rawUrl =
   (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_SUPABASE_URL || import.meta.env.SUPABASE_URL)) ||

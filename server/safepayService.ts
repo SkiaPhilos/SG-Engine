@@ -151,12 +151,28 @@ async function withDbTimeout<T>(promise: PromiseLike<T> | Promise<T>, timeoutMs:
  * zero-crash operation without requiring manual Cloud Run env setup.
  */
 function getMasterEncryptionKey(): Buffer {
-  const envKey =
+  let envKey =
     process.env.SAFEPAY_ENCRYPTION_KEY ||
     process.env.ENCRYPTION_MASTER_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    'safepay-store-engine-vault-v1-master-salt';
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!envKey || !envKey.trim()) {
+    // Generate or read an isolated server-only local secret file (never shipped to browser)
+    const localSecretPath = path.join(process.cwd(), '.safepay_vault_key');
+    if (fs.existsSync(localSecretPath)) {
+      try {
+        envKey = fs.readFileSync(localSecretPath, 'utf8').trim();
+      } catch {}
+    }
+    if (!envKey) {
+      envKey = crypto.randomBytes(32).toString('hex');
+      try {
+        fs.writeFileSync(localSecretPath, envKey, { mode: 0o600 });
+      } catch {}
+    }
+  }
+
   return crypto.createHash('sha256').update(envKey.trim()).digest();
 }
 
@@ -308,17 +324,17 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   }
 
   if (creds) {
-    if (persistedEnabled !== undefined) {
+    if (typeof creds.enabled !== 'boolean' && persistedEnabled !== undefined) {
       creds.enabled = persistedEnabled;
     }
-    if (localEntry?.environment) {
+    if (!creds.environment && localEntry?.environment) {
       creds.environment = localEntry.environment;
     }
-    // Sandbox defaults if keys missing
+    // If keys missing, keep webhookSecret empty so unconfigured webhooks are safely rejected
     if (creds.environment === 'sandbox' && (!creds.apiKey || creds.apiKey.length < 5)) {
-      creds.apiKey = 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1';
-      creds.secretKey = creds.secretKey || 'sec_sandbox_test_secret_key';
-      creds.webhookSecret = creds.webhookSecret || 'sec_sandbox_webhook_secret';
+      creds.apiKey = creds.apiKey || 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1';
+      creds.secretKey = creds.secretKey || '';
+      creds.webhookSecret = creds.webhookSecret || '';
     }
     credentialsCache.set(storeId, { creds, cachedAt: Date.now() });
     lastVaultDiagnostic = {
@@ -331,8 +347,8 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   // 7. Fallback if no custom encrypted keys or decryption tag mismatch
   const fallbackCreds: SafepayCredentials = {
     apiKey: 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1',
-    secretKey: 'sec_sandbox_test_secret_key',
-    webhookSecret: 'sec_sandbox_webhook_secret',
+    secretKey: '',
+    webhookSecret: '',
     environment: persistedEnv,
     enabled: persistedEnabled !== undefined ? persistedEnabled : false,
     autoConfirmOnPayment: persistedAutoConfirm,
@@ -341,7 +357,7 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   credentialsCache.set(storeId, { creds: fallbackCreds, cachedAt: Date.now() });
   lastVaultDiagnostic = {
     status: 'connected',
-    message: 'Safepay Sandbox test environment active.',
+    message: 'Safepay test environment active. Webhook secret must be configured for webhook verification.',
   };
   return fallbackCreds;
 }
@@ -592,6 +608,54 @@ export async function fetchOrder(storeId: string, orderId: string): Promise<any>
     throw new Error(`Order ${orderId} not found in store ${storeId}`);
   }
 
+  // Canonical server-side recalculation of order items against products database
+  if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+    try {
+      const productIds = data.items.map((i: any) => i.productId).filter(Boolean);
+      if (productIds.length > 0) {
+        const { data: dbProducts } = await supabase
+          .from('products')
+          .select('id, price, discount_percent')
+          .in('id', productIds);
+
+        if (dbProducts && dbProducts.length > 0) {
+          const prodMap = new Map(dbProducts.map((p: any) => [p.id, p]));
+          let canonicalSubtotal = 0;
+          for (const item of data.items) {
+            const p = prodMap.get(item.productId);
+            const qty = Math.max(1, Number(item.quantity) || 1);
+            if (p) {
+              const original = Number(p.price) || 0;
+              const discount = Math.min(100, Math.max(0, Number(p.discount_percent) || 0));
+              const unitPrice = discount > 0 ? Math.round(original * (1 - discount / 100)) : original;
+              canonicalSubtotal += unitPrice * qty;
+            } else {
+              canonicalSubtotal += (Number(item.unitPrice) || 0) * qty;
+            }
+          }
+
+          const deliveryFee = Number(data.delivery_fee) || 0;
+          const discountTotal = Number(data.discount_total) || 0;
+          const canonicalTotal = Math.max(0, canonicalSubtotal - discountTotal + deliveryFee);
+
+          if (canonicalTotal > 0 && Math.abs(canonicalTotal - Number(data.total)) > 1) {
+            console.warn(
+              `[SafepaySecurity] Price discrepancy detected for order ${orderId}: provided total was ${data.total}, canonical product total is ${canonicalTotal}. Enforcing canonical price.`
+            );
+            data.total = canonicalTotal;
+            data.subtotal = canonicalSubtotal;
+            await supabase
+              .from('orders')
+              .update({ total: canonicalTotal, subtotal: canonicalSubtotal, updated_at: new Date().toISOString() })
+              .eq('id', orderId);
+          }
+        }
+      }
+    } catch (recalcErr) {
+      console.warn('[SafepaySecurity] Server-side price recalculation warning:', recalcErr);
+    }
+  }
+
   return {
     id: data.id,
     total: typeof data.total === 'number' ? data.total : Number(data.total || 0),
@@ -728,11 +792,11 @@ export async function initSafepayTracker(params: {
 
   const checkoutBaseUrl =
     creds.environment === 'production'
-      ? 'https://api.getsafepay.com/components'
+      ? 'https://getsafepay.com/components'
       : 'https://sandbox.api.getsafepay.com/components';
 
-  // Amount in smallest unit (paisas for PKR)
-  const amountInPaisas = Math.round(order.total * 100);
+  // Amount in PKR major currency unit (e.g. 2500 for Rs. 2,500)
+  const orderAmount = Math.round(Number(order.total) * 100) / 100;
 
   // 3. Step A: Initialize order tracker on Safepay with Payments 2.0 metadata and customer attributes
   const nameParts = (order.customer?.name || '').trim().split(/\s+/);
@@ -741,7 +805,7 @@ export async function initSafepayTracker(params: {
 
   const initBody: Record<string, any> = {
     client: creds.apiKey,
-    amount: amountInPaisas,
+    amount: orderAmount,
     currency: 'PKR',
     environment: creds.environment,
     metadata: {
@@ -884,6 +948,10 @@ export function verifyWebhookSignature(params: {
   maxAgeSeconds?: number;
 }): { isValid: boolean; reason?: string } {
   const { signatureHeader, timestampHeader, rawBody, webhookSecret, maxAgeSeconds = 600 } = params;
+
+  if (!webhookSecret || typeof webhookSecret !== 'string' || !webhookSecret.trim()) {
+    return { isValid: false, reason: 'Webhook secret is not configured on server' };
+  }
 
   if (!signatureHeader || !timestampHeader) {
     return { isValid: false, reason: 'Missing signature or timestamp header' };

@@ -92,6 +92,7 @@ export const SafepayGatewayManager: React.FC = () => {
 
   const handleToggleEnable = async (newEnabled: boolean) => {
     setEnabled(newEnabled);
+    setSaveError(null);
     try {
       const updatedStatus = await configureSafepay({
         storeId,
@@ -103,8 +104,9 @@ export const SafepayGatewayManager: React.FC = () => {
         setStatus(updatedStatus);
         setEnabled(Boolean(updatedStatus.enabled));
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Auto-persisting Safepay toggle note:', err);
+      setSaveError(`Failed to save toggle state: ${err?.message || 'Authentication or connection error'}`);
     }
   };
 
@@ -193,7 +195,7 @@ export const SafepayGatewayManager: React.FC = () => {
     }
 
     try {
-      const willBeEnabled = enabled || Boolean(status?.enabled) || Boolean(apiKeyInput.trim());
+      const willBeEnabled = enabled;
       const updatedStatus = await configureSafepay({
         storeId,
         apiKey: apiKeyInput.trim() ? apiKeyInput.trim() : undefined,

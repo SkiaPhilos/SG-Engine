@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured, getSupabaseEnvDiagnostics } from '../su
 
 export const BOOTSTRAP_ADMIN_EMAIL = (
   (import.meta.env.VITE_ADMIN_EMAIL as string) ||
-  'maniacphilos@gmail.com'
+  ''
 ).trim().toLowerCase();
 
 export type { User };

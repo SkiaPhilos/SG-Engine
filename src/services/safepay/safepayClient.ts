@@ -95,13 +95,28 @@ export async function createSafepayTracker(params: {
   return await res.json();
 }
 
+async function getAdminAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  try {
+    const { supabase } = await import('../supabase/client');
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+  } catch {}
+  return headers;
+}
+
 /**
  * Admin operator: Purge stored credentials.
  */
 export async function clearSafepayCredentials(storeId: string = 'default'): Promise<SafepayStatusResponse> {
+  const headers = await getAdminAuthHeaders();
   const res = await fetch('/api/safepay/clear', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ storeId }),
   });
 
@@ -133,9 +148,10 @@ export async function configureSafepay(params: {
   enabled?: boolean;
   autoConfirmOnPayment?: boolean;
 }): Promise<SafepayStatusResponse> {
+  const headers = await getAdminAuthHeaders();
   const res = await fetch('/api/safepay/configure', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(params),
   });
 
@@ -170,9 +186,10 @@ export async function testSafepayConnection(
   let serverErrorMessage = '';
 
   try {
+    const headers = await getAdminAuthHeaders();
     const res = await fetch('/api/safepay/test-connection', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ storeId, ...options }),
     });
 
