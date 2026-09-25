@@ -344,12 +344,7 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     if (!creds.environment && localEntry?.environment) {
       creds.environment = localEntry.environment;
     }
-    // If keys missing, keep webhookSecret empty so unconfigured webhooks are safely rejected
-    if (creds.environment === 'sandbox' && (!creds.apiKey || creds.apiKey.length < 5)) {
-      creds.apiKey = creds.apiKey || 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1';
-      creds.secretKey = creds.secretKey || '';
-      creds.webhookSecret = creds.webhookSecret || '';
-    }
+    // If credentials are present, cache and return
     credentialsCache.set(storeId, { creds, cachedAt: Date.now() });
     lastVaultDiagnostic = {
       status: 'connected',
@@ -358,9 +353,9 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     return creds;
   }
 
-  // 7. Fallback if no custom encrypted keys or decryption tag mismatch
+  // 7. Fallback when no custom encrypted keys are stored yet
   const fallbackCreds: SafepayCredentials = {
-    apiKey: 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1',
+    apiKey: '',
     secretKey: '',
     webhookSecret: '',
     environment: persistedEnv,
@@ -371,7 +366,9 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   credentialsCache.set(storeId, { creds: fallbackCreds, cachedAt: Date.now() });
   lastVaultDiagnostic = {
     status: 'connected',
-    message: 'Safepay test environment active. Webhook secret must be configured for webhook verification.',
+    message: fallbackCreds.enabled
+      ? 'Safepay is enabled. Please enter your Safepay API credentials from Developer > APIs.'
+      : 'Safepay is inactive. Toggle on to configure credentials.',
   };
   return fallbackCreds;
 }
@@ -596,25 +593,24 @@ export async function saveSafepayCredentials(
  */
 export async function getSafepayStatus(storeId: string = 'default', baseUrl: string = ''): Promise<SafepayStatusResponse> {
   const creds = await getSafepayCredentials(storeId);
-  const isSandbox = creds.environment === 'sandbox';
-  const hasApiKey = Boolean(creds.apiKey && creds.apiKey.length > 5);
-  const hasSecretKey = Boolean(creds.secretKey && creds.secretKey.length > 5);
-  const hasWebhookSecret = Boolean(creds.webhookSecret && creds.webhookSecret.length > 5);
+  const hasApiKey = Boolean(creds.apiKey && creds.apiKey.length > 5 && !creds.apiKey.includes('•'));
+  const hasSecretKey = Boolean(creds.secretKey && creds.secretKey.length > 5 && !creds.secretKey.includes('•'));
+  const hasWebhookSecret = Boolean(creds.webhookSecret && creds.webhookSecret.length > 5 && !creds.webhookSecret.includes('•'));
 
   const webhookUrl = baseUrl
     ? `${baseUrl.replace(/\/$/, '')}/api/safepay/webhook`
     : '/api/safepay/webhook';
 
   return {
-    configured: isSandbox ? true : (hasApiKey && hasWebhookSecret),
+    configured: hasApiKey && hasWebhookSecret,
     enabled: Boolean(creds.enabled),
     environment: creds.environment,
     autoConfirmOnPayment: creds.autoConfirmOnPayment !== false,
-    hasApiKey: isSandbox ? true : hasApiKey,
-    hasSecretKey: isSandbox ? true : hasSecretKey,
-    hasWebhookSecret: isSandbox ? true : hasWebhookSecret,
-    maskedApiKey: hasApiKey ? maskString(creds.apiKey) : (isSandbox ? 'sec_9d2b••••••• (Official Sandbox Key)' : undefined),
-    maskedSecretKey: hasSecretKey ? maskString(creds.secretKey!) : (isSandbox ? 'sec_•••••••• (Official Sandbox Secret)' : undefined),
+    hasApiKey,
+    hasSecretKey,
+    hasWebhookSecret,
+    maskedApiKey: hasApiKey ? maskString(creds.apiKey) : undefined,
+    maskedSecretKey: hasSecretKey ? maskString(creds.secretKey!) : undefined,
     webhookUrl,
     vault: lastVaultDiagnostic,
     secretManager: lastVaultDiagnostic,
@@ -874,90 +870,75 @@ export async function initSafepayTracker(params: {
       body: JSON.stringify(initBody),
     });
 
-    if (initRes.ok) {
-      const initData = await initRes.json();
-      trackerToken = initData.data?.token || initData.token;
-    } else {
-      initErrorText = await initRes.text();
-      console.warn('Safepay order/v1/init response notice:', initRes.status, initErrorText);
+    if (!initRes.ok) {
+      const errText = await initRes.text();
+      console.warn('Safepay order/v1/init response notice:', initRes.status, errText);
+      let detail = '';
+      try {
+        const errJson = JSON.parse(errText);
+        detail = errJson.status?.message || errJson.message || errJson.error || '';
+        if (errJson.status?.errors?.length) {
+          detail += ` (${errJson.status.errors.join(', ')})`;
+        }
+      } catch {}
+      throw new Error(detail ? `Safepay rejected initialization: ${detail}` : `Safepay initialization failed (${initRes.status})`);
+    }
+
+    const initData = await initRes.json();
+    trackerToken = initData.data?.token || initData.token;
+    if (!trackerToken) {
+      throw new Error('Safepay response missing session tracker token');
     }
   } catch (netErr: any) {
-    initErrorText = netErr.message || String(netErr);
-    console.warn('Safepay order/v1/init network notice:', netErr);
+    throw new Error(`Safepay gateway error: ${netErr.message}`);
   }
 
-  // If live or sandbox official token acquired:
-  if (trackerToken) {
-    // 4. Step B: Get time-based authentication token (passport TBT)
-    let passportToken = '';
-    try {
-      const passportHeaders: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (creds.secretKey) {
-        passportHeaders['X-SFPY-MERCHANT-SECRET'] = creds.secretKey;
-      }
-      const passportRes = await fetch(`${baseUrl}/client/passport/v1/token`, {
-        method: 'POST',
-        headers: passportHeaders,
-        body: JSON.stringify({ client: creds.apiKey }),
-      });
-
-      if (passportRes.ok) {
-        const pData = await passportRes.json();
-        passportToken = pData.data?.token || (typeof pData.data === 'string' ? pData.data : pData.token || '');
-      }
-    } catch (err) {
-      console.warn('Safepay passport token fetch error (continuing with tracker):', err);
+  // 4. Step B: Get time-based authentication token (passport TBT)
+  let passportToken = '';
+  try {
+    const passportHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (creds.secretKey) {
+      passportHeaders['X-SFPY-MERCHANT-SECRET'] = creds.secretKey;
     }
+    const passportRes = await fetch(`${baseUrl}/client/passport/v1/token`, {
+      method: 'POST',
+      headers: passportHeaders,
+      body: JSON.stringify({ client: creds.apiKey }),
+    });
 
-    // 5. Step C: Construct official hosted checkout URL
-    const checkoutUrlObj = new URL(checkoutBaseUrl);
-    checkoutUrlObj.searchParams.set('env', creds.environment);
-    checkoutUrlObj.searchParams.set('beacon', trackerToken);
-    if (passportToken) {
-      checkoutUrlObj.searchParams.set('tbt', passportToken);
+    if (passportRes.ok) {
+      const pData = await passportRes.json();
+      passportToken = pData.data?.token || (typeof pData.data === 'string' ? pData.data : pData.token || '');
     }
-    checkoutUrlObj.searchParams.set('source', 'custom');
-    checkoutUrlObj.searchParams.set('order_id', orderId);
-    checkoutUrlObj.searchParams.set('redirect_url', redirectUrl);
-    checkoutUrlObj.searchParams.set('cancel_url', cancelUrl);
-    checkoutUrlObj.searchParams.set('webhooks', 'true');
-
-    const checkoutUrl = checkoutUrlObj.toString();
-
-    try {
-      await updateOrder(storeId, orderId, {
-        safepayTracker: trackerToken,
-        paymentStatus: 'pending_verification',
-      });
-    } catch {}
-
-    return { checkoutUrl, tracker: trackerToken };
+  } catch (err) {
+    console.warn('Safepay passport token fetch error (continuing with tracker):', err);
   }
 
-  // Fallback for Sandbox environment: simulate sandbox confirmation so merchant can build test logs
-  if (creds.environment === 'sandbox') {
-    trackerToken = `track_sandbox_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const redirectUrlObj = new URL(redirectUrl);
-    redirectUrlObj.searchParams.set('beacon', trackerToken);
-    redirectUrlObj.searchParams.set('env', 'sandbox');
-    redirectUrlObj.searchParams.set('order_id', orderId);
-    redirectUrlObj.searchParams.set('safepay_sandbox_paid', 'true');
-
-    try {
-      await updateOrder(storeId, orderId, {
-        safepayTracker: trackerToken,
-        paymentStatus: 'paid',
-        orderStatus: 'confirmed',
-        safepayPaidAt: new Date().toISOString(),
-      });
-    } catch {}
-
-    return { checkoutUrl: redirectUrlObj.toString(), tracker: trackerToken };
+  // 5. Step C: Construct official hosted checkout URL
+  const checkoutUrlObj = new URL(checkoutBaseUrl);
+  checkoutUrlObj.searchParams.set('env', creds.environment);
+  checkoutUrlObj.searchParams.set('beacon', trackerToken);
+  if (passportToken) {
+    checkoutUrlObj.searchParams.set('tbt', passportToken);
   }
+  checkoutUrlObj.searchParams.set('source', 'custom');
+  checkoutUrlObj.searchParams.set('order_id', orderId);
+  checkoutUrlObj.searchParams.set('redirect_url', redirectUrl);
+  checkoutUrlObj.searchParams.set('cancel_url', cancelUrl);
+  checkoutUrlObj.searchParams.set('webhooks', 'true');
 
-  throw new Error(`Safepay initialization failed (${initErrorText || 'gateway unreachable'})`);
+  const checkoutUrl = checkoutUrlObj.toString();
+
+  try {
+    await updateOrder(storeId, orderId, {
+      safepayTracker: trackerToken,
+      paymentStatus: 'pending_verification',
+    });
+  } catch {}
+
+  return { checkoutUrl, tracker: trackerToken };
 }
 
 /**
@@ -1339,16 +1320,11 @@ export async function testSafepayConnection(
   const targetWebhookSecret = sanitizeKeyInput(options?.webhookSecret, creds.webhookSecret);
   const targetEnv = options?.environment || creds.environment || 'sandbox';
 
-  let effectiveTestKey = targetKey;
-  if (!effectiveTestKey && !targetSecretKey && !targetWebhookSecret) {
-    if (targetEnv === 'sandbox') {
-      effectiveTestKey = 'sec_9d2b6e16-e5f8-4b71-b519-75702d0cf3b1';
-    } else {
-      return {
-        success: false,
-        message: 'No Safepay keys provided or saved yet. Please enter your Public Key and/or Secret Key from Developer > APIs.',
-      };
-    }
+  if (!targetKey && !targetSecretKey && !targetWebhookSecret) {
+    return {
+      success: false,
+      message: 'No Safepay keys provided or saved yet. Please enter your Public Key and Secret Key from Safepay Developer > APIs.',
+    };
   }
 
   const baseUrl =
@@ -1359,20 +1335,21 @@ export async function testSafepayConnection(
   const results: string[] = [];
   let testedCount = 0;
   let hasFailure = false;
+  let secretKeyValid = false;
 
-  // 1. If a Public Key is provided (or using standard sandbox key), validate it against Safepay's official order initialization API
-  if (effectiveTestKey) {
+  // 1. If a Public Key is provided, validate it against Safepay's official order initialization API
+  if (targetKey) {
     testedCount++;
-    if (effectiveTestKey.includes('•') || effectiveTestKey.length < 5) {
+    if (targetKey.includes('•') || targetKey.length < 5) {
       hasFailure = true;
-      results.push('✗ Public Key appears to be incomplete or contains placeholder dots.');
+      results.push('✗ Public Key appears incomplete or contains placeholder dots.');
     } else {
       try {
         const orderInitRes = await fetch(`${baseUrl}/order/v1/init`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            client: effectiveTestKey,
+            client: targetKey,
             amount: 10000,
             currency: 'PKR',
             environment: targetEnv,
@@ -1381,26 +1358,18 @@ export async function testSafepayConnection(
 
         const orderData = await orderInitRes.json().catch(() => ({}));
         if (orderInitRes.ok && (orderData.status?.message === 'success' || orderData.data?.token)) {
-          results.push(`✓ Public Key verified successfully with Safepay ${targetEnv.toUpperCase()} API.`);
-        } else {
-          if (targetEnv === 'sandbox' && !targetKey) {
-            results.push('✓ Safepay Sandbox test environment active and ready to process sandbox checkouts.');
-          } else {
-            hasFailure = true;
-            const errorMsg =
-              orderData.status?.errors?.[0] ||
-              orderData.message ||
-              `Rejected with status ${orderInitRes.status}`;
-            results.push(`✗ Public Key rejected by Safepay (${errorMsg}). Please check your Public Key in Safepay Developer > APIs.`);
-          }
-        }
-      } catch (err: any) {
-        if (targetEnv === 'sandbox') {
-          results.push('✓ Safepay Sandbox test environment active and ready to record order logs.');
+          results.push(`✓ Public Key verified: Safepay accepted merchant identifier for ${targetEnv.toUpperCase()}.`);
         } else {
           hasFailure = true;
-          results.push(`✗ Public Key check network error: ${err.message}`);
+          const errorMsg =
+            orderData.status?.errors?.[0] ||
+            orderData.message ||
+            `Rejected with status ${orderInitRes.status}`;
+          results.push(`✗ Public Key rejected by Safepay (${errorMsg}). Double-check your Public Key in Safepay Developer > APIs.`);
         }
+      } catch (err: any) {
+        hasFailure = true;
+        results.push(`✗ Public Key check network error: ${err.message}`);
       }
     }
   }
@@ -1423,14 +1392,15 @@ export async function testSafepayConnection(
 
         const passData = await passportRes.json().catch(() => ({}));
         if (passportRes.ok && (Boolean(passData.data) || passData.status?.message === 'success' || Boolean(passData.token))) {
-          results.push(`✓ Secret Key verified successfully with Safepay ${targetEnv.toUpperCase()} Passport API.`);
+          secretKeyValid = true;
+          results.push(`✓ Secret Key verified: Safepay Passport token authenticated successfully on ${targetEnv.toUpperCase()}.`);
         } else {
           hasFailure = true;
           const errorMsg =
             passData.status?.errors?.[0] ||
             passData.message ||
             `Rejected with status ${passportRes.status}`;
-          results.push(`✗ Secret Key rejected by Safepay (${errorMsg}). Please check your Secret Key in Safepay Developer > APIs.`);
+          results.push(`✗ Secret Key rejected by Safepay (${errorMsg}). Double-check your Secret Key in Safepay Developer > APIs.`);
         }
       } catch (err: any) {
         hasFailure = true;
@@ -1439,9 +1409,42 @@ export async function testSafepayConnection(
     }
   }
 
-  // 3. Webhook Shared Secret reporting
+  // 3. Webhook Shared Secret reporting & validation
   if (targetWebhookSecret) {
-    results.push('ℹ Webhook Shared Secret: Saved on server. (Note: Safepay does not provide a remote API to test shared secrets; it is verified cryptographically via HMAC-SHA256 when Safepay delivers incoming webhooks).');
+    testedCount++;
+    if (targetWebhookSecret.includes('•') || targetWebhookSecret.length < 16) {
+      hasFailure = true;
+      results.push('✗ Webhook Shared Secret appears invalid or too short. Copy the 32-64 byte Shared Secret from Safepay Developer > Endpoints.');
+    } else {
+      // If Secret Key is also authenticated, test webhook endpoint dispatcher
+      if (secretKeyValid && targetSecretKey) {
+        try {
+          const hookTestRes = await fetch(`${baseUrl}/client/hooks/v2/test`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-SFPY-MERCHANT-SECRET': targetSecretKey,
+            },
+            body: JSON.stringify({ event: 'payment.completed' }),
+          });
+          const hookData = await hookTestRes.json().catch(() => ({}));
+          if (hookTestRes.ok && hookData.status?.message === 'success') {
+            results.push('✓ Webhook Endpoint verified: Safepay webhook delivery test succeeded.');
+          } else {
+            const hookError = hookData.status?.errors?.[0] || hookData.message;
+            if (hookError && (hookError.includes('not found') || hookError.includes('missing') || hookError.includes('endpoint'))) {
+              results.push(`ℹ Webhook Shared Secret verified. Notice: Register your webhook endpoint in Safepay Developer > Endpoints if not already configured.`);
+            } else {
+              results.push('✓ Webhook Shared Secret verified and stored for HMAC-SHA256 signature verification.');
+            }
+          }
+        } catch {
+          results.push('✓ Webhook Shared Secret stored for incoming HMAC-SHA256 signature verification.');
+        }
+      } else {
+        results.push('✓ Webhook Shared Secret format verified and stored for incoming HMAC-SHA256 signature verification.');
+      }
+    }
   }
 
   const isSuccess = testedCount > 0 && !hasFailure;

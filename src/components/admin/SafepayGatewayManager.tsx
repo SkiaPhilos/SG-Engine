@@ -222,6 +222,12 @@ export const SafepayGatewayManager: React.FC = () => {
       return;
     }
 
+    if (enabled && !apiKeyInput.trim() && !status?.hasApiKey) {
+      setSaveError('Safepay cannot be enabled without a Public Key. Please enter your Public Key (sec_... or pub_...) from Safepay Developer > APIs, or toggle Safepay off.');
+      setSaving(false);
+      return;
+    }
+
     try {
       const willBeEnabled = enabled;
       const updatedStatus = await configureSafepay({

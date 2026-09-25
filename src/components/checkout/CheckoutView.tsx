@@ -280,6 +280,10 @@ export const CheckoutView: React.FC = () => {
 
       // 3B. Pay Live Online (Instant Safepay)
       if (paymentRail === 'advance' && advanceMode === 'safepay') {
+        if (!safepayStatus?.enabled || !safepayStatus?.hasApiKey) {
+          throw new Error('Safepay online checkout is not active. Please select Bank / Wallet Transfer or Cash on Delivery.');
+        }
+
         const orderId = await createOrder(storeId, {
           storeId,
           orderNumber,
@@ -908,71 +912,75 @@ export const CheckoutView: React.FC = () => {
               {/* IF ADVANCE PAYMENT SELECTED: Present the 2 Types */}
               {paymentRail === 'advance' && (
                 <div className="space-y-4 pt-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-bold" style={{ color: themeColors.text }}>
-                      Select how you want to pay in advance:
-                    </p>
-                    <span className="text-[10px] text-neutral-500">
-                      2 Advance Methods Available
-                    </span>
-                  </div>
-
-                  {/* Advance Sub-Option Tabs */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    
-                    {/* Sub-Option A: Pay Live Online (Instant Order - No Waiting) */}
-                    <button
-                      id="advance-suboption-safepay-btn"
-                      type="button"
-                      onClick={() => setAdvanceMode('safepay')}
-                      className={`p-3.5 rounded-xl border text-left transition-all ${
-                        advanceMode === 'safepay'
-                          ? 'ring-2 border-blue-600 bg-blue-500/10 shadow-xs'
-                          : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-400 opacity-80'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-xs font-extrabold flex items-center gap-1.5 text-blue-700 dark:text-blue-300">
-                          <Zap className="w-4 h-4 fill-blue-500 text-blue-500" />
-                          Pay Live Online
-                        </span>
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-800 dark:text-blue-200">
-                          RECOMMENDED
+                  {Boolean(safepayStatus?.enabled && safepayStatus?.hasApiKey) && advanceMethods.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-bold" style={{ color: themeColors.text }}>
+                          Select how you want to pay in advance:
+                        </p>
+                        <span className="text-[10px] text-neutral-500">
+                          2 Advance Methods Available
                         </span>
                       </div>
-                      <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                        Instant confirmation. No proof or screenshot required. No waiting!
-                      </p>
-                    </button>
 
-                    {/* Sub-Option B: Manual Bank / Wallet Transfer (Wait for confirmation) */}
-                    <button
-                      id="advance-suboption-manual-btn"
-                      type="button"
-                      onClick={() => setAdvanceMode('manual')}
-                      className={`p-3.5 rounded-xl border text-left transition-all ${
-                        advanceMode === 'manual'
-                          ? 'ring-2 border-amber-600 bg-amber-500/10 shadow-xs'
-                          : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-400 opacity-80'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-xs font-extrabold flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
-                          <Building2 className="w-4 h-4 text-amber-600" />
-                          Bank / Wallet Transfer
-                        </span>
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-200">
-                          Manual Proof
-                        </span>
+                      {/* Advance Sub-Option Tabs */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        
+                        {/* Sub-Option A: Pay Live Online (Instant Order - No Waiting) */}
+                        <button
+                          id="advance-suboption-safepay-btn"
+                          type="button"
+                          onClick={() => setAdvanceMode('safepay')}
+                          className={`p-3.5 rounded-xl border text-left transition-all ${
+                            advanceMode === 'safepay'
+                              ? 'ring-2 border-blue-600 bg-blue-500/10 shadow-xs'
+                              : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-400 opacity-80'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-xs font-extrabold flex items-center gap-1.5 text-blue-700 dark:text-blue-300">
+                              <Zap className="w-4 h-4 fill-blue-500 text-blue-500" />
+                              Pay Live Online
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-800 dark:text-blue-200">
+                              RECOMMENDED
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                            Instant confirmation. No proof or screenshot required. No waiting!
+                          </p>
+                        </button>
+
+                        {/* Sub-Option B: Manual Bank / Wallet Transfer (Wait for confirmation) */}
+                        <button
+                          id="advance-suboption-manual-btn"
+                          type="button"
+                          onClick={() => setAdvanceMode('manual')}
+                          className={`p-3.5 rounded-xl border text-left transition-all ${
+                            advanceMode === 'manual'
+                              ? 'ring-2 border-amber-600 bg-amber-500/10 shadow-xs'
+                              : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-400 opacity-80'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-xs font-extrabold flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
+                              <Building2 className="w-4 h-4 text-amber-600" />
+                              Bank / Wallet Transfer
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-200">
+                              Manual Proof
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                            Direct transfer via Bank IBAN, JazzCash, or Easypaisa + TID upload.
+                          </p>
+                        </button>
                       </div>
-                      <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                        Direct transfer via Bank IBAN, JazzCash, or Easypaisa + TID upload.
-                      </p>
-                    </button>
-                  </div>
+                    </>
+                  )}
 
                   {/* DETAIL FOR SUB-OPTION A: PAY LIVE ONLINE */}
-                  {advanceMode === 'safepay' && (
+                  {Boolean(safepayStatus?.enabled && safepayStatus?.hasApiKey) && advanceMode === 'safepay' && (
                     <div
                       className="p-5 rounded-xl border space-y-4"
                       style={{

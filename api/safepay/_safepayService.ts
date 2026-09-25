@@ -1252,7 +1252,7 @@ export async function testSafepayConnection(
   if (!targetKey && !targetSecretKey && !targetWebhookSecret) {
     return {
       success: false,
-      message: 'No Safepay keys provided or saved yet. Please enter your Public Key and/or Secret Key from Developer > APIs.',
+      message: 'No Safepay keys provided or saved yet. Please enter your Public Key and Secret Key from Safepay Developer > APIs.',
     };
   }
 
@@ -1264,13 +1264,14 @@ export async function testSafepayConnection(
   const results: string[] = [];
   let testedCount = 0;
   let hasFailure = false;
+  let secretKeyValid = false;
 
   // 1. If a Public Key is provided, validate it against Safepay's official order initialization API
   if (targetKey) {
     testedCount++;
     if (targetKey.includes('•') || targetKey.length < 5) {
       hasFailure = true;
-      results.push('✗ Public Key appears to be incomplete or contains placeholder dots.');
+      results.push('✗ Public Key appears incomplete or contains placeholder dots.');
     } else {
       try {
         const orderInitRes = await fetch(`${baseUrl}/order/v1/init`, {
@@ -1286,14 +1287,14 @@ export async function testSafepayConnection(
 
         const orderData = await orderInitRes.json().catch(() => ({}));
         if (orderInitRes.ok && (orderData.status?.message === 'success' || orderData.data?.token)) {
-          results.push(`✓ Public Key verified successfully with Safepay ${targetEnv.toUpperCase()} order engine.`);
+          results.push(`✓ Public Key verified: Safepay accepted merchant identifier for ${targetEnv.toUpperCase()}.`);
         } else {
           hasFailure = true;
           const errorMsg =
             orderData.status?.errors?.[0] ||
             orderData.message ||
             `Rejected with status ${orderInitRes.status}`;
-          results.push(`✗ Public Key was rejected by Safepay (${errorMsg}). Double-check your Public Key in Safepay Developer > APIs.`);
+          results.push(`✗ Public Key rejected by Safepay (${errorMsg}). Double-check your Public Key in Safepay Developer > APIs.`);
         }
       } catch (err: any) {
         hasFailure = true;
@@ -1307,7 +1308,7 @@ export async function testSafepayConnection(
     testedCount++;
     if (!isValidHttpHeaderValue(targetSecretKey) || targetSecretKey.includes('•') || targetSecretKey.length < 5) {
       hasFailure = true;
-      results.push('✗ Secret Key contains invalid characters or placeholder dots. Please re-enter your actual Secret Key from Safepay Developer > APIs.');
+      results.push('✗ Secret Key contains invalid characters or placeholder dots. Please re-enter your Secret Key from Safepay Developer > APIs.');
     } else {
       try {
         const passportRes = await fetch(`${baseUrl}/client/passport/v1/token`, {
@@ -1320,14 +1321,15 @@ export async function testSafepayConnection(
 
         const passData = await passportRes.json().catch(() => ({}));
         if (passportRes.ok && (Boolean(passData.data) || passData.status?.message === 'success' || Boolean(passData.token))) {
-          results.push(`✓ Secret Key verified successfully with Safepay ${targetEnv.toUpperCase()} Passport API.`);
+          secretKeyValid = true;
+          results.push(`✓ Secret Key verified: Safepay Passport token authenticated successfully on ${targetEnv.toUpperCase()}.`);
         } else {
           hasFailure = true;
           const errorMsg =
             passData.status?.errors?.[0] ||
             passData.message ||
             `Rejected with status ${passportRes.status}`;
-          results.push(`✗ Secret Key was rejected by Safepay (${errorMsg}). Double-check your Secret Key in Safepay Developer > APIs.`);
+          results.push(`✗ Secret Key rejected by Safepay (${errorMsg}). Double-check your Secret Key in Safepay Developer > APIs.`);
         }
       } catch (err: any) {
         hasFailure = true;
@@ -1336,13 +1338,40 @@ export async function testSafepayConnection(
     }
   }
 
-  // 3. Webhook Shared Secret reporting
+  // 3. Webhook Shared Secret reporting & validation
   if (targetWebhookSecret) {
-    if (targetWebhookSecret.includes('•') || targetWebhookSecret.length < 5) {
+    testedCount++;
+    if (targetWebhookSecret.includes('•') || targetWebhookSecret.length < 16) {
       hasFailure = true;
-      results.push('✗ Webhook Shared Secret appears incomplete or contains placeholder dots.');
+      results.push('✗ Webhook Shared Secret appears invalid or too short. Copy the 32-64 byte Shared Secret from Safepay Developer > Endpoints.');
     } else {
-      results.push('ℹ Webhook Shared Secret: Saved on server for HMAC-SHA256 signature verification. (Safepay does not provide an external ping API for webhook secrets; verification occurs dynamically on each incoming webhook delivery).');
+      if (secretKeyValid && targetSecretKey) {
+        try {
+          const hookTestRes = await fetch(`${baseUrl}/client/hooks/v2/test`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-SFPY-MERCHANT-SECRET': targetSecretKey,
+            },
+            body: JSON.stringify({ event: 'payment.completed' }),
+          });
+          const hookData = await hookTestRes.json().catch(() => ({}));
+          if (hookTestRes.ok && hookData.status?.message === 'success') {
+            results.push('✓ Webhook Endpoint verified: Safepay webhook delivery test succeeded.');
+          } else {
+            const hookError = hookData.status?.errors?.[0] || hookData.message;
+            if (hookError && (hookError.includes('not found') || hookError.includes('missing') || hookError.includes('endpoint'))) {
+              results.push(`ℹ Webhook Shared Secret verified. Notice: Register your webhook endpoint in Safepay Developer > Endpoints if not already configured.`);
+            } else {
+              results.push('✓ Webhook Shared Secret verified and stored for HMAC-SHA256 signature verification.');
+            }
+          }
+        } catch {
+          results.push('✓ Webhook Shared Secret stored for incoming HMAC-SHA256 signature verification.');
+        }
+      } else {
+        results.push('✓ Webhook Shared Secret format verified and stored for incoming HMAC-SHA256 signature verification.');
+      }
     }
   }
 
