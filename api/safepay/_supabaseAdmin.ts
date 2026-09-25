@@ -10,6 +10,9 @@ export function getAdminSupabase(): SupabaseClient {
     const supabaseUrl = (
       process.env.SUPABASE_URL ||
       process.env.VITE_SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.PUBLIC_SUPABASE_URL ||
+      process.env.REACT_APP_SUPABASE_URL ||
       ''
     ).trim();
 

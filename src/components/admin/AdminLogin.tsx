@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Shield, Lock, AlertCircle, ArrowLeft, KeyRound, Mail, Eye, EyeOff, CheckCircle2, UserPlus, LogIn, HelpCircle } from 'lucide-react';
 import { loginWithGoogle, loginWithEmail, signUpAdmin, sendPasswordReset } from '../../services/auth/authService';
+import { ensureSupabaseConfigured } from '../../services/supabase/client';
 import { useStore } from '../../context/StoreContext';
 
 export const AdminLogin: React.FC = () => {
@@ -16,11 +17,21 @@ export const AdminLogin: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Proactively ensure runtime configuration is resolved
+  useEffect(() => {
+    ensureSupabaseConfigured().then((configured) => {
+      if (configured) {
+        setError(null);
+      }
+    });
+  }, []);
+
   const handleGoogleLogin = async () => {
     setLoading(true);
     setError(null);
     setSuccessMessage(null);
     try {
+      await ensureSupabaseConfigured();
       await loginWithGoogle();
       const isAdmin = await checkAdminStatus();
       if (!isAdmin) {

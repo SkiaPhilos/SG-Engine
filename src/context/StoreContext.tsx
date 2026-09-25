@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { User } from '@supabase/supabase-js';
-import { supabase } from '../services/supabase/client';
+import { supabase, onSupabaseConfigured } from '../services/supabase/client';
 import {
   StoreConfig,
   Category,
@@ -77,6 +77,7 @@ const StoreContext = createContext<StoreContextValue | undefined>(undefined);
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [storeId] = useState<string>(DEFAULT_STORE_ID);
+  const [configVersion, setConfigVersion] = useState<number>(0);
   const [config, setConfig] = useState<StoreConfig>(DEFAULT_STORE_CONFIG);
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -139,6 +140,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return status;
   };
 
+  // Listen for dynamic Supabase configuration (e.g. loaded from /api/config)
+  useEffect(() => {
+    const unsub = onSupabaseConfigured((configured) => {
+      if (configured) {
+        setConfigVersion(v => v + 1);
+      }
+    });
+    return () => unsub();
+  }, []);
+
   // Real-time Store Data Subscription
   useEffect(() => {
     setIsLoading(true);
@@ -155,7 +166,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
 
     return () => unsubscribe();
-  }, [storeId]);
+  }, [storeId, configVersion]);
 
   // Active theme calculation
   const activeTheme = useMemo(() => {

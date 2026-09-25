@@ -2,7 +2,7 @@ import { testSafepayConnection } from './_safepayService.js';
 import { getAdminSupabase } from './_supabaseAdmin.js';
 
 async function verifyAdminAuth(req: any, storeId?: string): Promise<{ authorized: boolean; error?: string }> {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.PUBLIC_SUPABASE_URL;
   if (!supabaseUrl) return { authorized: true }; // offline/standalone dev
 
   const authHeader = req.headers?.authorization || req.headers?.Authorization;

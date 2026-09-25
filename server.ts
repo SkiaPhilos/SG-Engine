@@ -148,6 +148,64 @@ async function startServer() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // Client runtime configuration endpoint (safely exposes public/publishable Supabase URL and anon key)
+  app.get('/api/config', (req: Request, res: Response) => {
+    const rawUrl =
+      process.env.VITE_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.PUBLIC_SUPABASE_URL ||
+      process.env.REACT_APP_SUPABASE_URL ||
+      '';
+
+    const rawAnonKey =
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.SUPABASE_PUBLISHABLE_KEY ||
+      process.env.VITE_SUPABASE_KEY ||
+      process.env.SUPABASE_KEY ||
+      process.env.VITE_SUPABASE_API_KEY ||
+      process.env.SUPABASE_API_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_KEY ||
+      process.env.REACT_APP_SUPABASE_ANON_KEY ||
+      process.env.REACT_APP_SUPABASE_KEY ||
+      '';
+
+    const rawAdminEmail =
+      process.env.VITE_ADMIN_EMAIL ||
+      process.env.ADMIN_EMAIL ||
+      '';
+
+    const clean = (val: string) => {
+      let v = val.trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.slice(1, -1).trim();
+      }
+      return v;
+    };
+
+    const supabaseUrl = clean(rawUrl);
+    const supabaseAnonKey = clean(rawAnonKey);
+    const adminEmail = clean(rawAdminEmail);
+
+    const hasUrl = Boolean(
+      supabaseUrl && (supabaseUrl.startsWith('https://') || supabaseUrl.startsWith('http://'))
+    );
+    const hasKey = Boolean(supabaseAnonKey && supabaseAnonKey.length > 20);
+    const configured = hasUrl && hasKey;
+
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    return res.json({
+      configured,
+      supabaseUrl: configured ? supabaseUrl : undefined,
+      supabaseAnonKey: configured ? supabaseAnonKey : undefined,
+      adminEmail: adminEmail || undefined,
+    });
+  });
+
   /**
    * GET /api/safepay/status
    * Returns safe masked configuration status (never returns secret keys)

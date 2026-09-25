@@ -1,25 +1,37 @@
 import { User } from '@supabase/supabase-js';
-import { supabase, isSupabaseConfigured, getSupabaseEnvDiagnostics } from '../supabase/client';
+import {
+  supabase,
+  isSupabaseConfigured,
+  ensureSupabaseConfigured,
+  getSupabaseEnvDiagnostics,
+  getRuntimeAdminEmail,
+  onSupabaseConfigured,
+} from '../supabase/client';
 
-export const BOOTSTRAP_ADMIN_EMAIL = (
-  (import.meta.env.VITE_ADMIN_EMAIL as string) ||
-  ''
-).trim().toLowerCase();
+export function getBootstrapAdminEmail(): string {
+  return (
+    getRuntimeAdminEmail() ||
+    (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_ADMIN_EMAIL as string)) ||
+    ''
+  ).trim().toLowerCase();
+}
+
+export const BOOTSTRAP_ADMIN_EMAIL = getBootstrapAdminEmail();
 
 export type { User };
 
 function getMissingConfigMessage(): string {
   const diag = getSupabaseEnvDiagnostics();
   if (!diag.hasUrl && !diag.hasKey) {
-    return 'Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing in this build. If you just added them in Vercel, please trigger a Redeploy (with "Clear build cache") so Vite can bake them into the client bundle.';
+    return 'Supabase environment configuration is missing. Please ensure VITE_SUPABASE_URL (or SUPABASE_URL) and VITE_SUPABASE_ANON_KEY (or SUPABASE_ANON_KEY) are configured in your deployment environment variables.';
   }
   if (!diag.hasUrl) {
-    return 'VITE_SUPABASE_URL is missing. Please ensure it begins with https:// in your Vercel Environment Variables and redeploy.';
+    return 'Supabase URL is missing. Please ensure VITE_SUPABASE_URL or SUPABASE_URL is set in your environment variables.';
   }
   if (!diag.hasKey) {
-    return 'VITE_SUPABASE_ANON_KEY is missing or invalid. Please paste your Supabase Project anon public key in Vercel Environment Variables and redeploy.';
+    return 'Supabase Anon Key is missing. Please ensure VITE_SUPABASE_ANON_KEY or SUPABASE_ANON_KEY is set in your environment variables.';
   }
-  return 'Supabase credentials appear incomplete or invalid. Please check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel Settings > Environment Variables.';
+  return 'Supabase credentials appear incomplete or invalid. Please check your deployment environment variables.';
 }
 
 export interface AdminAuthState {
@@ -35,7 +47,8 @@ export interface AdminAuthState {
  */
 export async function recordAdminIfBootstrap(user: User): Promise<void> {
   const userEmail = (user.email || '').trim().toLowerCase();
-  if (userEmail && userEmail === BOOTSTRAP_ADMIN_EMAIL) {
+  const bootstrapEmail = getBootstrapAdminEmail();
+  if (userEmail && bootstrapEmail && userEmail === bootstrapEmail) {
     try {
       await supabase.from('admins').upsert(
         {
@@ -56,6 +69,8 @@ export async function recordAdminIfBootstrap(user: User): Promise<void> {
  * Sign in as store administrator using email and password.
  */
 export async function loginWithEmail(email: string, pass: string): Promise<User> {
+  await ensureSupabaseConfigured();
+
   if (!isSupabaseConfigured()) {
     throw new Error(getMissingConfigMessage());
   }
@@ -83,7 +98,12 @@ export async function loginWithEmail(email: string, pass: string): Promise<User>
 /**
  * Sign up a new store administrator account.
  */
-export async function signUpAdmin(email: string, pass: string): Promise<{ user: User | null; sessionActive: boolean; message?: string }> {
+export async function signUpAdmin(
+  email: string,
+  pass: string
+): Promise<{ user: User | null; sessionActive: boolean; message?: string }> {
+  await ensureSupabaseConfigured();
+
   if (!isSupabaseConfigured()) {
     throw new Error(getMissingConfigMessage());
   }
@@ -117,6 +137,8 @@ export async function signUpAdmin(email: string, pass: string): Promise<{ user: 
  * Sends a password reset email for an administrator account.
  */
 export async function sendPasswordReset(email: string): Promise<void> {
+  await ensureSupabaseConfigured();
+
   if (!isSupabaseConfigured()) {
     throw new Error(getMissingConfigMessage());
   }
@@ -135,6 +157,8 @@ export async function sendPasswordReset(email: string): Promise<void> {
  * Sign in using Google OAuth provider configured in Supabase.
  */
 export async function loginWithGoogle(): Promise<void> {
+  await ensureSupabaseConfigured();
+
   if (!isSupabaseConfigured()) {
     throw new Error(getMissingConfigMessage());
   }
@@ -156,6 +180,7 @@ export async function loginWithGoogle(): Promise<void> {
  * Sign out current admin user session.
  */
 export async function logout(): Promise<void> {
+  await ensureSupabaseConfigured();
   if (!isSupabaseConfigured()) return;
   await supabase.auth.signOut();
 }
@@ -167,9 +192,13 @@ export const logoutAdmin = logout;
  */
 export async function checkIsAdmin(user: User | null): Promise<boolean> {
   if (!user) return false;
-  const userEmail = (user.email || '').trim().toLowerCase();
+  await ensureSupabaseConfigured();
+  if (!isSupabaseConfigured()) return false;
 
-  if (BOOTSTRAP_ADMIN_EMAIL && userEmail === BOOTSTRAP_ADMIN_EMAIL) {
+  const userEmail = (user.email || '').trim().toLowerCase();
+  const bootstrapEmail = getBootstrapAdminEmail();
+
+  if (bootstrapEmail && userEmail === bootstrapEmail) {
     recordAdminIfBootstrap(user).catch(() => {});
     return true;
   }
@@ -212,24 +241,49 @@ export async function checkIsAdmin(user: User | null): Promise<boolean> {
  * Subscribes to real-time authentication session changes across the app.
  */
 export function subscribeAuthState(callback: (user: User | null) => void): () => void {
-  if (!isSupabaseConfigured()) {
+  let activeSub: { unsubscribe: () => void } | null = null;
+  let isDisposed = false;
+
+  const initAuth = () => {
+    if (isDisposed || !isSupabaseConfigured()) return;
+
+    supabase.auth
+      .getUser()
+      .then(({ data }) => {
+        if (!isDisposed) callback(data?.user || null);
+      })
+      .catch(() => {
+        if (!isDisposed) callback(null);
+      });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!isDisposed) callback(session?.user || null);
+    });
+
+    activeSub = subscription;
+  };
+
+  if (isSupabaseConfigured()) {
+    initAuth();
+  } else {
     callback(null);
-    return () => {};
+    ensureSupabaseConfigured().then((configured) => {
+      if (configured && !isDisposed) {
+        initAuth();
+      }
+    });
   }
 
-  // Initial user check
-  supabase.auth.getUser().then(({ data }) => {
-    callback(data?.user || null);
-  }).catch(() => {
-    callback(null);
-  });
-
-  // Listen for Supabase session changes
-  const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-    callback(session?.user || null);
+  const unsubConfig = onSupabaseConfigured((configured) => {
+    if (configured && !isDisposed) {
+      if (activeSub) activeSub.unsubscribe();
+      initAuth();
+    }
   });
 
   return () => {
-    subscription.unsubscribe();
+    isDisposed = true;
+    if (activeSub) activeSub.unsubscribe();
+    unsubConfig();
   };
 }
