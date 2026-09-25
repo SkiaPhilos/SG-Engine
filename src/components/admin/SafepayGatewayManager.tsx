@@ -19,6 +19,7 @@ import {
   RefreshCw,
   CreditCard,
   Trash2,
+  CheckCircle2,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import {
@@ -28,6 +29,7 @@ import {
   clearSafepayCredentials,
   SafepayStatusResponse,
 } from '../../services/safepay/safepayClient';
+import { savePaymentMethod } from '../../services/store/storeService';
 
 export const SafepayGatewayManager: React.FC = () => {
   const { storeId, themeColors } = useStore();
@@ -38,6 +40,7 @@ export const SafepayGatewayManager: React.FC = () => {
   const [clearing, setClearing] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [toggleFeedback, setToggleFeedback] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [copiedItem, setCopiedItem] = useState<string | null>(null);
@@ -93,6 +96,7 @@ export const SafepayGatewayManager: React.FC = () => {
   const handleToggleEnable = async (newEnabled: boolean) => {
     setEnabled(newEnabled);
     setSaveError(null);
+    setToggleFeedback(null);
     try {
       const updatedStatus = await configureSafepay({
         storeId,
@@ -104,6 +108,30 @@ export const SafepayGatewayManager: React.FC = () => {
         setStatus(updatedStatus);
         setEnabled(Boolean(updatedStatus.enabled));
       }
+      // Direct synchronization to Supabase payment_methods table and local store event bus
+      try {
+        await savePaymentMethod(storeId, {
+          id: `pm_safepay_${storeId}`,
+          type: 'safepay',
+          displayName: 'Live Online Payment (Safepay)',
+          accountTitle: 'Safepay Automated Gateway',
+          accountNumber: environment === 'production' ? 'Production Hosted Gateway' : 'Sandbox Test Gateway',
+          bankName: 'Safepay Checkout',
+          instructions: 'Instant checkout via Visa, Mastercard, PayPak, Raast, and digital wallets.',
+          requireScreenshot: false,
+          requireTransactionReference: false,
+          enabled: newEnabled,
+          sortOrder: 99,
+        });
+      } catch (pmErr) {
+        console.warn('Syncing payment_methods locally:', pmErr);
+      }
+      setToggleFeedback(
+        newEnabled
+          ? '✓ Safepay Gateway enabled and stored in Supabase database.'
+          : '✓ Safepay Gateway disabled and stored in Supabase database.'
+      );
+      setTimeout(() => setToggleFeedback(null), 4000);
     } catch (err: any) {
       console.warn('Auto-persisting Safepay toggle note:', err);
       setSaveError(`Failed to save toggle state: ${err?.message || 'Authentication or connection error'}`);
@@ -212,6 +240,24 @@ export const SafepayGatewayManager: React.FC = () => {
         if (typeof updatedStatus.autoConfirmOnPayment === 'boolean') {
           setAutoConfirmOnPayment(updatedStatus.autoConfirmOnPayment);
         }
+      }
+      // Also update local store and payment_methods table
+      try {
+        await savePaymentMethod(storeId, {
+          id: `pm_safepay_${storeId}`,
+          type: 'safepay',
+          displayName: 'Live Online Payment (Safepay)',
+          accountTitle: 'Safepay Automated Gateway',
+          accountNumber: environment === 'production' ? 'Production Hosted Gateway' : 'Sandbox Test Gateway',
+          bankName: 'Safepay Checkout',
+          instructions: 'Instant checkout via Visa, Mastercard, PayPak, Raast, and digital wallets.',
+          requireScreenshot: false,
+          requireTransactionReference: false,
+          enabled: willBeEnabled,
+          sortOrder: 99,
+        });
+      } catch (pmErr) {
+        console.warn('Syncing payment_methods locally:', pmErr);
       }
       // Immediately wipe plaintext secret inputs from local React state for zero-exposure security
       setApiKeyInput('');
@@ -351,10 +397,21 @@ export const SafepayGatewayManager: React.FC = () => {
           {/* Gateway Activation Toggle */}
           <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: themeColors.border }}>
             <div>
-              <p className="text-sm font-bold" style={{ color: themeColors.text }}>
-                Enable Safepay Checkout
-              </p>
-              <p className="text-xs" style={{ color: themeColors.muted }}>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-bold" style={{ color: themeColors.text }}>
+                  Enable Safepay Checkout
+                </p>
+                <span
+                  className={`text-[10px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wider font-bold ${
+                    enabled
+                      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20'
+                      : 'bg-neutral-500/10 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20'
+                  }`}
+                >
+                  {enabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </div>
+              <p className="text-xs mt-0.5" style={{ color: themeColors.muted }}>
                 Show Safepay instant checkout option to customers on checkout.
               </p>
             </div>
@@ -370,27 +427,69 @@ export const SafepayGatewayManager: React.FC = () => {
             </label>
           </div>
 
-          {/* Automatic Order Confirmation Toggle */}
-          <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: themeColors.border }}>
-            <div className="pr-4">
-              <p className="text-sm font-bold" style={{ color: themeColors.text }}>
-                Automatic Order Confirmation
-              </p>
-              <p className="text-xs" style={{ color: themeColors.muted }}>
-                Automatically mark orders as Confirmed when Safepay payment is verified. Toggle off if you want paid orders to stay in Pending status until you manually review and confirm them.
-              </p>
+          {/* Feedback message on toggle action */}
+          {toggleFeedback && (
+            <div className="p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              <span>{toggleFeedback}</span>
             </div>
+          )}
 
-            <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
-              <input
-                type="checkbox"
-                checked={autoConfirmOnPayment}
-                onChange={e => handleToggleAutoConfirm(e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-            </label>
-          </div>
+          {/* Save Error Notice */}
+          {saveError && (
+            <div className="p-3.5 rounded-xl border border-red-500/30 bg-red-500/10 text-red-900 dark:text-red-200 text-xs space-y-1">
+              <div className="flex items-center gap-2 font-bold">
+                <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                <span>Notice</span>
+              </div>
+              <p>{saveError}</p>
+            </div>
+          )}
+
+          {/* Clean Inactive State Notice (When Disabled - NO CREDS REQUIRED) */}
+          {!enabled && (
+            <div className="p-5 rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/30 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-neutral-700 dark:text-neutral-300">
+                <Zap className="w-4 h-4 text-neutral-400" />
+                <span>Safepay Gateway is currently Disabled</span>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
+                Your storefront checkout will only display manual payment methods (Cash on Delivery, JazzCash, Easypaisa, Bank Transfer, Raast).
+                No Safepay credentials or API keys are required while this gateway is turned off.
+              </p>
+              <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+                <span className="inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300">
+                  Status: Inactive
+                </span>
+                <span>• Flip the toggle switch above to <strong>Enable</strong> to enter your API keys and activate live cards and digital wallets.</span>
+              </div>
+            </div>
+          )}
+
+          {/* Credentials and Configuration Fields (ONLY SHOWN WHEN ENABLED) */}
+          {enabled && (
+            <>
+              {/* Automatic Order Confirmation Toggle */}
+              <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: themeColors.border }}>
+                <div className="pr-4">
+                  <p className="text-sm font-bold" style={{ color: themeColors.text }}>
+                    Automatic Order Confirmation
+                  </p>
+                  <p className="text-xs" style={{ color: themeColors.muted }}>
+                    Automatically mark orders as Confirmed when Safepay payment is verified. Toggle off if you want paid orders to stay in Pending status until you manually review and confirm them.
+                  </p>
+                </div>
+
+                <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={autoConfirmOnPayment}
+                    onChange={e => handleToggleAutoConfirm(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                </label>
+              </div>
 
           {/* Environment Mode Selector */}
           <div>
@@ -781,31 +880,37 @@ export const SafepayGatewayManager: React.FC = () => {
               <div className="whitespace-pre-line leading-relaxed">{testResult.message}</div>
             </div>
           )}
-        </div>
-
-        {/* Save Error Box */}
-        {saveError && (
-          <div className="p-4 rounded-2xl border border-red-500/30 bg-red-500/10 text-red-900 dark:text-red-200 text-xs space-y-1.5">
-            <div className="flex items-center gap-2 font-bold">
-              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
-              <span>Failed to Save Credentials</span>
-            </div>
-            <p className="leading-relaxed">{saveError}</p>
-          </div>
+          </>
         )}
-
-        {/* Save Action Bar */}
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-xs text-white shadow-xs transition-all active:scale-95 disabled:opacity-50"
-            style={{ backgroundColor: themeColors.primary }}
-          >
-            {savedSuccess ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-            <span>{saving ? 'Saving...' : savedSuccess ? 'Safepay Configured!' : 'Save Gateway Settings'}</span>
-          </button>
         </div>
+
+        {/* Save Action Bar (Only shown when gateway is enabled) */}
+        {enabled && (
+          <>
+            {/* Save Error Box */}
+            {saveError && (
+              <div className="p-4 rounded-2xl border border-red-500/30 bg-red-500/10 text-red-900 dark:text-red-200 text-xs space-y-1.5">
+                <div className="flex items-center gap-2 font-bold">
+                  <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                  <span>Failed to Save Credentials</span>
+                </div>
+                <p className="leading-relaxed">{saveError}</p>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="submit"
+                disabled={saving}
+                className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-xs text-white shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                style={{ backgroundColor: themeColors.primary }}
+              >
+                {savedSuccess ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+                <span>{saving ? 'Saving...' : savedSuccess ? 'Safepay Configured!' : 'Save Gateway Settings'}</span>
+              </button>
+            </div>
+          </>
+        )}
       </form>
     </div>
   );

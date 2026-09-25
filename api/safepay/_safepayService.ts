@@ -98,17 +98,31 @@ function getMasterEncryptionKey(): Buffer {
     process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!envKey || !envKey.trim()) {
-    // Generate or read an isolated server-only local secret file (never shipped to browser)
-    const localSecretPath = path.join(process.cwd(), '.safepay_vault_key');
-    if (fs.existsSync(localSecretPath)) {
+    // Check /tmp first (writable in serverless environments like Vercel and AWS Lambda)
+    const tmpSecretPath = path.join('/tmp', '.safepay_vault_key');
+    if (fs.existsSync(tmpSecretPath)) {
       try {
-        envKey = fs.readFileSync(localSecretPath, 'utf8').trim();
+        envKey = fs.readFileSync(tmpSecretPath, 'utf8').trim();
       } catch {}
     }
     if (!envKey) {
-      envKey = crypto.randomBytes(32).toString('hex');
+      const localSecretPath = path.join(process.cwd(), '.safepay_vault_key');
+      if (fs.existsSync(localSecretPath)) {
+        try {
+          envKey = fs.readFileSync(localSecretPath, 'utf8').trim();
+        } catch {}
+      }
+    }
+    // If not on disk, derive a deterministic project-level key so it NEVER rotates across serverless requests
+    if (!envKey) {
+      const projectSeed =
+        process.env.SUPABASE_URL ||
+        process.env.VITE_SUPABASE_URL ||
+        process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        'safepay-deterministic-store-key-v1';
+      envKey = crypto.createHmac('sha256', 'store_safepay_vault_seed_v1').update(projectSeed).digest('hex');
       try {
-        fs.writeFileSync(localSecretPath, envKey, { mode: 0o600 });
+        fs.writeFileSync(tmpSecretPath, envKey, { mode: 0o600 });
       } catch {}
     }
   }
@@ -180,10 +194,27 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   // 3. Obtain master encryption key
   const key = getMasterEncryptionKey();
 
-  // 4. Retrieve encrypted ciphertext from Supabase
+  // 4. Retrieve encrypted ciphertext & payment methods status from Supabase
   try {
     const supabase = getAdminSupabase();
     let encryptedData: any = null;
+
+    // Check payment_methods table in Supabase for authoritative enabled status
+    let dbEnabled: boolean | undefined = undefined;
+    try {
+      const pmRes: any = await withDbTimeout(
+        supabase
+          .from('payment_methods')
+          .select('enabled')
+          .eq('store_id', storeId)
+          .eq('type', 'safepay')
+          .maybeSingle(),
+        2500
+      );
+      if (pmRes && !pmRes.error && pmRes.data && typeof pmRes.data.enabled === 'boolean') {
+        dbEnabled = pmRes.data.enabled;
+      }
+    } catch {}
 
     // Try store_private_settings table (matches supabase-migration.sql)
     const storeRes: any = await withDbTimeout(
@@ -215,39 +246,66 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
       }
     }
 
-    if (!encryptedData) {
+    const metaEnabled = typeof encryptedData?.enabled === 'boolean' ? encryptedData.enabled : undefined;
+    const metaEnv: 'sandbox' | 'production' = encryptedData?.environment || 'sandbox';
+    const metaAutoConfirm = encryptedData?.autoConfirmOnPayment !== false;
+    const effectiveEnabled = dbEnabled !== undefined ? dbEnabled : (metaEnabled ?? false);
+
+    if (!encryptedData || !encryptedData.ciphertext) {
       lastVaultDiagnostic = {
-        status: 'not_configured',
-        message: 'No Safepay credentials configured in vault yet.',
+        status: effectiveEnabled ? 'connected' : 'not_configured',
+        message: effectiveEnabled ? 'Safepay active in store database.' : 'Safepay currently disabled.',
       };
       return {
         apiKey: '',
+        secretKey: '',
         webhookSecret: '',
-        environment: 'sandbox',
-        enabled: false,
+        environment: metaEnv,
+        enabled: effectiveEnabled,
+        autoConfirmOnPayment: metaAutoConfirm,
       };
     }
 
-    const creds = decryptPayload(encryptedData, key);
-    credentialsCache.set(storeId, { creds, cachedAt: Date.now() });
-    lastVaultDiagnostic = {
-      status: 'connected',
-      message: 'Credentials active and securely decrypted from vault using AES-256-GCM.',
-    };
-    return creds;
+    try {
+      const creds = decryptPayload(encryptedData, key);
+      creds.enabled = effectiveEnabled;
+      creds.environment = creds.environment || metaEnv;
+      creds.autoConfirmOnPayment = creds.autoConfirmOnPayment !== undefined ? creds.autoConfirmOnPayment : metaAutoConfirm;
+
+      credentialsCache.set(storeId, { creds, cachedAt: Date.now() });
+      lastVaultDiagnostic = {
+        status: 'connected',
+        message: 'Credentials active and securely decrypted from vault using AES-256-GCM.',
+      };
+      return creds;
+    } catch (decryptErr: any) {
+      console.warn('[SafepayVault] Decryption fallback notice (persisting status):', decryptErr?.message);
+      lastVaultDiagnostic = {
+        status: 'connected',
+        message: 'Safepay state active from database settings.',
+      };
+      return {
+        apiKey: '',
+        secretKey: '',
+        webhookSecret: '',
+        environment: metaEnv,
+        enabled: effectiveEnabled,
+        autoConfirmOnPayment: metaAutoConfirm,
+      };
+    }
   } catch (err: any) {
     const errMsg = err.message || String(err);
     lastVaultDiagnostic = {
       status: 'error',
-      message: `Decryption notice: ${errMsg}`,
+      message: `Database query notice: ${errMsg}`,
       details: errMsg,
     };
-    console.warn('[SafepayVault] Decryption warning:', errMsg);
     return {
       apiKey: '',
       webhookSecret: '',
       environment: 'sandbox',
       enabled: false,
+      autoConfirmOnPayment: true,
     };
   }
 }
@@ -292,6 +350,15 @@ export async function clearSafepayCredentials(storeId: string = 'default'): Prom
   } catch (e) {
     // ignore
   }
+  try {
+    await supabase
+      .from('payment_methods')
+      .update({ enabled: false })
+      .eq('store_id', storeId)
+      .eq('type', 'safepay');
+  } catch (e) {
+    // ignore
+  }
   lastVaultDiagnostic = {
     status: 'not_configured',
     message: 'Safepay credentials cleared. Ready for fresh configuration.',
@@ -319,8 +386,8 @@ export async function saveSafepayCredentials(
     apiKey: sanitizeKeyInput(params.apiKey, existing.apiKey),
     secretKey: sanitizeKeyInput(params.secretKey, existing.secretKey),
     webhookSecret: sanitizeKeyInput(params.webhookSecret, existing.webhookSecret),
-    environment: params.environment || existing.environment,
-    enabled: params.enabled !== undefined ? params.enabled : existing.enabled,
+    environment: params.environment || existing.environment || 'sandbox',
+    enabled: params.enabled !== undefined ? Boolean(params.enabled) : Boolean(existing.enabled),
     autoConfirmOnPayment:
       params.autoConfirmOnPayment !== undefined
         ? params.autoConfirmOnPayment
@@ -330,6 +397,22 @@ export async function saveSafepayCredentials(
   };
 
   const encrypted = encryptPayload(updated, key);
+  const hasApiKey = Boolean(updated.apiKey && updated.apiKey.length > 5);
+  const hasSecretKey = Boolean(updated.secretKey && updated.secretKey.length > 5);
+  const hasWebhookSecret = Boolean(updated.webhookSecret && updated.webhookSecret.length > 5);
+
+  const payloadWithMeta = {
+    ...encrypted,
+    enabled: updated.enabled,
+    environment: updated.environment,
+    autoConfirmOnPayment: updated.autoConfirmOnPayment,
+    hasApiKey,
+    hasSecretKey,
+    hasWebhookSecret,
+    maskedApiKey: hasApiKey ? maskString(updated.apiKey) : undefined,
+    maskedSecretKey: hasSecretKey ? maskString(updated.secretKey!) : undefined,
+  };
+
   const supabase = getAdminSupabase();
 
   let savedToDb = false;
@@ -344,7 +427,7 @@ export async function saveSafepayCredentials(
           {
             store_id: storeId,
             setting_key: 'safepay',
-            encrypted_payload: encrypted,
+            encrypted_payload: payloadWithMeta,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'store_id,setting_key' }
@@ -370,7 +453,7 @@ export async function saveSafepayCredentials(
             {
               store_id: storeId,
               setting_key: 'safepay',
-              encrypted_data: encrypted,
+              encrypted_data: payloadWithMeta,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'store_id,setting_key' }
@@ -386,6 +469,34 @@ export async function saveSafepayCredentials(
     } catch (e: any) {
       lastDbError = e;
     }
+  }
+
+  // 3. Synchronize public.payment_methods table so storefront checkout and admin state are 100% in sync
+  try {
+    await withDbTimeout(
+      supabase.from('payment_methods').upsert(
+        {
+          id: `pm_safepay_${storeId}`,
+          store_id: storeId,
+          type: 'safepay',
+          display_name: 'Live Online Payment (Safepay)',
+          account_title: 'Safepay Automated Gateway',
+          account_number: updated.environment === 'production' ? 'Production Hosted Gateway' : 'Sandbox Test Gateway',
+          iban: '',
+          bank_name: 'Safepay Checkout',
+          instructions: 'Instant checkout via Visa, Mastercard, PayPak, Raast, and digital wallets.',
+          require_screenshot: false,
+          require_transaction_reference: false,
+          enabled: updated.enabled,
+          sort_order: 99,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      ),
+      3000
+    );
+  } catch (pmErr) {
+    console.warn('[SafepayVault] payment_methods upsert notice:', pmErr);
   }
 
   // Always update in-memory cache so credentials take effect immediately

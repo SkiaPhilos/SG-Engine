@@ -158,17 +158,31 @@ function getMasterEncryptionKey(): Buffer {
     process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!envKey || !envKey.trim()) {
-    // Generate or read an isolated server-only local secret file (never shipped to browser)
-    const localSecretPath = path.join(process.cwd(), '.safepay_vault_key');
-    if (fs.existsSync(localSecretPath)) {
+    // Check /tmp first (writable in serverless environments like Vercel and AWS Lambda)
+    const tmpSecretPath = path.join('/tmp', '.safepay_vault_key');
+    if (fs.existsSync(tmpSecretPath)) {
       try {
-        envKey = fs.readFileSync(localSecretPath, 'utf8').trim();
+        envKey = fs.readFileSync(tmpSecretPath, 'utf8').trim();
       } catch {}
     }
     if (!envKey) {
-      envKey = crypto.randomBytes(32).toString('hex');
+      const localSecretPath = path.join(process.cwd(), '.safepay_vault_key');
+      if (fs.existsSync(localSecretPath)) {
+        try {
+          envKey = fs.readFileSync(localSecretPath, 'utf8').trim();
+        } catch {}
+      }
+    }
+    // If not on disk, derive a deterministic project-level key so it NEVER rotates across serverless requests
+    if (!envKey) {
+      const projectSeed =
+        process.env.SUPABASE_URL ||
+        process.env.VITE_SUPABASE_URL ||
+        process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        'safepay-deterministic-store-key-v1';
+      envKey = crypto.createHmac('sha256', 'store_safepay_vault_seed_v1').update(projectSeed).digest('hex');
       try {
-        fs.writeFileSync(localSecretPath, envKey, { mode: 0o600 });
+        fs.writeFileSync(tmpSecretPath, envKey, { mode: 0o600 });
       } catch {}
     }
   }
@@ -450,6 +464,21 @@ export async function saveSafepayCredentials(
   };
 
   const encrypted = encryptPayload(updated, key);
+  const hasApiKey = Boolean(updated.apiKey && updated.apiKey.length > 5);
+  const hasSecretKey = Boolean(updated.secretKey && updated.secretKey.length > 5);
+  const hasWebhookSecret = Boolean(updated.webhookSecret && updated.webhookSecret.length > 5);
+
+  const payloadWithMeta = {
+    ...encrypted,
+    enabled: updated.enabled,
+    environment: updated.environment,
+    autoConfirmOnPayment: updated.autoConfirmOnPayment,
+    hasApiKey,
+    hasSecretKey,
+    hasWebhookSecret,
+    maskedApiKey: hasApiKey ? maskString(updated.apiKey) : undefined,
+    maskedSecretKey: hasSecretKey ? maskString(updated.secretKey!) : undefined,
+  };
   const supabase = getAdminSupabase();
 
   // 1. Immediately cache in memory
@@ -477,7 +506,7 @@ export async function saveSafepayCredentials(
           {
             store_id: storeId,
             setting_key: 'safepay',
-            encrypted_payload: encrypted,
+            encrypted_payload: payloadWithMeta,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'store_id,setting_key' }
@@ -502,7 +531,7 @@ export async function saveSafepayCredentials(
             {
               store_id: storeId,
               setting_key: 'safepay',
-              encrypted_data: encrypted,
+              encrypted_data: payloadWithMeta,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'store_id,setting_key' }

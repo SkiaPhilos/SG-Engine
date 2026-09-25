@@ -68,25 +68,40 @@ export const OrderConfirmationView: React.FC = () => {
         }
       }
 
-      getOrderById(storeId, targetId!, tokenFromUrl || order?.accessToken).then(ord => {
+      let pollAttempts = 0;
+      let interval: any = null;
+
+      const fetchOrder = () => {
         if (!isMounted) return;
-        setOrder(ord);
-        if (ord?.transactionReference) setTidInput(ord.transactionReference);
-        setLoading(false);
-      }).catch(err => {
-        console.error('Error loading order confirmation:', err);
-        if (isMounted) setLoading(false);
-      });
-    };
+        pollAttempts++;
+        if (pollAttempts > 15 && interval) {
+          clearInterval(interval);
+        }
 
-    fetchOrder();
+        getOrderById(storeId, targetId!, tokenFromUrl || order?.accessToken).then(ord => {
+          if (!isMounted) return;
+          setOrder(ord);
+          if (ord?.transactionReference) setTidInput(ord.transactionReference);
+          setLoading(false);
+          // If order is already paid/confirmed, stop polling immediately to save egress
+          if ((ord?.paymentStatus === 'paid' || ord?.orderStatus === 'confirmed') && interval) {
+            clearInterval(interval);
+          }
+        }).catch(err => {
+          console.error('Error loading order confirmation:', err);
+          if (isMounted) setLoading(false);
+        });
+      };
 
-    // Poll every 3 seconds to catch real-time webhook status updates from Safepay
-    const interval = setInterval(fetchOrder, 3000);
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
+      fetchOrder();
+
+      // Poll every 3 seconds for up to 15 times (~45s) while awaiting instant webhook notification
+      interval = setInterval(fetchOrder, 3000);
+      return () => {
+        isMounted = false;
+        if (interval) clearInterval(interval);
+      };
+    }
   }, [activeOrderId, storeId]);
 
   const handleUpdateProof = async () => {

@@ -1500,10 +1500,12 @@ export function subscribeStoreData(
     window.addEventListener('store_data_changed', handleCustomEvent);
   }
 
-  // Polling interval as universal fallback (syncs across tabs and ensures updates reflect reliably)
-  const pollInterval = setInterval(() => {
-    if (!isMounted) return;
-    if (!isSupabaseConfigured()) {
+  // Local storage polling ONLY when Supabase is not configured (offline demo mode)
+  // When Supabase is configured, Postgres Realtime WebSocket handles updates event-driven with ZERO polling egress
+  let pollInterval: any = null;
+  if (!isSupabaseConfigured()) {
+    pollInterval = setInterval(() => {
+      if (!isMounted) return;
       callbacks.onStoreConfig?.(getLocalItem<StoreConfig>(`config_${storeId}`, { ...DEFAULT_STORE_CONFIG, id: storeId }));
       callbacks.onCategories?.(getLocalItem<Category[]>(`categories_${storeId}`, []));
       callbacks.onProducts?.(getLocalItem<Product[]>(`products_${storeId}`, []));
@@ -1512,18 +1514,13 @@ export function subscribeStoreData(
       if (callbacks.onOrders) {
         callbacks.onOrders(getLocalItem<Order[]>(`orders_${storeId}`, []));
       }
-    } else {
-      // Periodic background verification from Supabase
-      getProducts(storeId).then(p => {
-        if (isMounted && p && p.length > 0) callbacks.onProducts?.(p);
-      }).catch(() => {});
-    }
-  }, 3500);
+    }, 5000);
+  }
 
   let channel: any = null;
   if (isSupabaseConfigured()) {
     channel = supabase
-      .channel(`store_channel_${storeId}_${Date.now()}`)
+      .channel(`store_realtime_${storeId}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'stores', filter: `id=eq.${storeId}` },
@@ -1580,7 +1577,9 @@ export function subscribeStoreData(
   return () => {
     isMounted = false;
     activeStoreSubscriptions.delete(listener);
-    clearInterval(pollInterval);
+    if (pollInterval) {
+      clearInterval(pollInterval);
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('store_data_changed', handleCustomEvent);
     }

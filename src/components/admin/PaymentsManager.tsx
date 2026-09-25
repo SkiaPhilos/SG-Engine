@@ -27,6 +27,8 @@ export const PaymentsManager: React.FC = () => {
   const [currentMethod, setCurrentMethod] = useState<Partial<PaymentMethod> | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const manualMethods = paymentMethods.filter(m => m.type !== 'safepay');
+
   const availableTypes: { type: PaymentType; label: string; defaultName: string }[] = [
     { type: 'cod', label: 'Cash on Delivery (COD)', defaultName: 'Cash on Delivery (COD)' },
     { type: 'jazzcash', label: 'JazzCash Wallet', defaultName: 'JazzCash' },
@@ -115,7 +117,7 @@ export const PaymentsManager: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight" style={{ color: themeColors.text }}>
-            Payment Methods ({paymentMethods.length})
+            Payment Destinations ({manualMethods.length})
           </h2>
           <p className="text-xs" style={{ color: themeColors.muted }}>
             Manage Cash on Delivery (COD) and manual advance payment channels (JazzCash, Easypaisa, Bank Transfer, Raast).
@@ -126,7 +128,7 @@ export const PaymentsManager: React.FC = () => {
           <button
             id="add-payment-btn"
             onClick={() => handleOpenAdd('jazzcash')}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs text-white shadow-xs transition-all active:scale-95"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs text-white shadow-xs transition-all active:scale-95 cursor-pointer"
             style={{ backgroundColor: themeColors.primary }}
           >
             <Plus className="w-4 h-4" />
@@ -189,7 +191,7 @@ export const PaymentsManager: React.FC = () => {
 
       {/* Payment Destinations Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {paymentMethods.length === 0 ? (
+        {manualMethods.length === 0 ? (
           <div className="col-span-2 p-8 text-center rounded-2xl border" style={{ borderColor: themeColors.border, backgroundColor: themeColors.surface }}>
             <Wallet className="w-12 h-12 mx-auto mb-2 opacity-30 text-indigo-600" />
             <p className="font-bold text-sm">No payment destinations configured</p>
@@ -198,7 +200,7 @@ export const PaymentsManager: React.FC = () => {
             </p>
           </div>
         ) : (
-          paymentMethods.map(m => (
+          manualMethods.map(m => (
             <div
               key={m.id}
               className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
