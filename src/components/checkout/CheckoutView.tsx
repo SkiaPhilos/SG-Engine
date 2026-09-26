@@ -857,7 +857,9 @@ export const CheckoutView: React.FC = () => {
                           Advance Payment
                         </span>
                         <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                          Live Instant or Bank Transfer
+                          {Boolean(safepayStatus?.enabled && safepayStatus?.hasApiKey)
+                            ? '⚡ Live Online Card & Bank Transfer'
+                            : 'Bank / Wallet Transfer'}
                         </span>
                       </div>
                     </div>
