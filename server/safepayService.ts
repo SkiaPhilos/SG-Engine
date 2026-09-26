@@ -37,72 +37,13 @@ export interface SafepayStatusResponse {
 }
 
 // In-memory cache for credentials to avoid redundant database round-trips and decryptions
+// In-memory cache for credentials to avoid redundant database round-trips and decryptions
 interface CachedCredentials {
   creds: SafepayCredentials;
   cachedAt: number;
 }
 const credentialsCache = new Map<string, CachedCredentials>();
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours TTL
-
-const VAULT_FILE_PATH = path.join(process.cwd(), '.safepay_vault.json');
-
-function saveToLocalVaultFile(
-  storeId: string,
-  encrypted?: EncryptedSafepayPayload | null,
-  meta?: { enabled?: boolean; environment?: 'sandbox' | 'production'; autoConfirmOnPayment?: boolean }
-): void {
-  try {
-    let data: Record<string, any> = {};
-    if (fs.existsSync(VAULT_FILE_PATH)) {
-      try {
-        data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
-      } catch {}
-    }
-    const current = data[storeId] || data['default'] || {};
-    const updatedEntry: Record<string, any> = {
-      ...current,
-      ...(encrypted || {}),
-      updatedAt: new Date().toISOString(),
-    };
-    if (meta?.enabled !== undefined) updatedEntry.enabled = meta.enabled;
-    if (meta?.environment) updatedEntry.environment = meta.environment;
-    if (meta?.autoConfirmOnPayment !== undefined) updatedEntry.autoConfirmOnPayment = meta.autoConfirmOnPayment;
-
-    data[storeId] = updatedEntry;
-    if (storeId !== 'default') {
-      data['default'] = { ...data['default'], ...updatedEntry };
-    }
-    fs.writeFileSync(VAULT_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
-  } catch (err) {
-    console.warn('[SafepayVault] Notice: could not write to local vault file:', err);
-  }
-}
-
-function loadFromLocalVaultFile(storeId: string): any | null {
-  try {
-    if (fs.existsSync(VAULT_FILE_PATH)) {
-      const data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
-      return data[storeId] || data['default'] || null;
-    }
-  } catch (err) {
-    console.warn('[SafepayVault] Notice: could not read from local vault file:', err);
-  }
-  return null;
-}
-
-function removeFromLocalVaultFile(storeId: string): void {
-  try {
-    if (fs.existsSync(VAULT_FILE_PATH)) {
-      const data = JSON.parse(fs.readFileSync(VAULT_FILE_PATH, 'utf8'));
-      delete data[storeId];
-      if (storeId === 'default' || storeId === 'default-store') {
-        delete data['default'];
-        delete data['default-store'];
-      }
-      fs.writeFileSync(VAULT_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
-    }
-  } catch {}
-}
+const CACHE_TTL_MS = 60 * 1000; // 1 minute TTL
 
 // Diagnostic state for encryption vault health
 let lastVaultDiagnostic: VaultDiagnostic = {
@@ -267,15 +208,12 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
   // 3. Obtain master encryption key
   const key = getMasterEncryptionKey();
 
-  // 4. Check local vault file first (resilient across server restarts)
-  const localEntry = loadFromLocalVaultFile(storeId);
-  let persistedEnabled: boolean | undefined = localEntry?.enabled;
-  let persistedEnv: 'sandbox' | 'production' = localEntry?.environment || 'sandbox';
-  let persistedAutoConfirm: boolean = localEntry?.autoConfirmOnPayment !== false;
+  // 4. Query Supabase store_private_settings / private_settings
+  let persistedEnabled: boolean | undefined = undefined;
+  let persistedEnv: 'sandbox' | 'production' = 'sandbox';
+  let persistedAutoConfirm: boolean = true;
+  let encryptedData: any = null;
 
-  let encryptedData: any = (localEntry?.iv && localEntry?.ciphertext) ? localEntry : null;
-
-  // 5. Query Supabase store_private_settings / private_settings with isolated try/catches
   try {
     const supabase = getAdminSupabase();
     const storeRes: any = await withDbTimeout(
@@ -289,9 +227,18 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     );
     if (storeRes && !storeRes.error && storeRes.data?.encrypted_payload) {
       encryptedData = storeRes.data.encrypted_payload;
+      if (typeof encryptedData.enabled === 'boolean') {
+        persistedEnabled = encryptedData.enabled;
+      }
+      if (encryptedData.environment) {
+        persistedEnv = encryptedData.environment;
+      }
+      if (typeof encryptedData.autoConfirmOnPayment === 'boolean') {
+        persistedAutoConfirm = encryptedData.autoConfirmOnPayment;
+      }
     }
   } catch (dbErr) {
-    // Non-fatal, local entry or fallback applies
+    // Non-fatal
   }
 
   if (!encryptedData) {
@@ -308,6 +255,12 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
       );
       if (legacyRes && !legacyRes.error && legacyRes.data?.encrypted_data) {
         encryptedData = legacyRes.data.encrypted_data;
+        if (typeof encryptedData.enabled === 'boolean') {
+          persistedEnabled = encryptedData.enabled;
+        }
+        if (encryptedData.environment) {
+          persistedEnv = encryptedData.environment;
+        }
       }
     } catch {}
   }
@@ -341,8 +294,8 @@ export async function getSafepayCredentials(storeId: string = 'default'): Promis
     if (typeof creds.enabled !== 'boolean' && persistedEnabled !== undefined) {
       creds.enabled = persistedEnabled;
     }
-    if (!creds.environment && localEntry?.environment) {
-      creds.environment = localEntry.environment;
+    if (!creds.environment && persistedEnv) {
+      creds.environment = persistedEnv;
     }
     // If credentials are present, cache and return
     credentialsCache.set(storeId, { creds, cachedAt: Date.now() });
@@ -394,7 +347,6 @@ function isValidHttpHeaderValue(val: string): boolean {
  */
 export async function clearSafepayCredentials(storeId: string = 'default'): Promise<void> {
   credentialsCache.delete(storeId);
-  removeFromLocalVaultFile(storeId);
   const supabase = getAdminSupabase();
   try {
     await supabase
@@ -484,14 +436,7 @@ export async function saveSafepayCredentials(
     credentialsCache.set('default', { creds: updated, cachedAt: Date.now() });
   }
 
-  // 2. Persist to local vault file on disk (both ciphertext AND config metadata)
-  saveToLocalVaultFile(storeId, encrypted, {
-    enabled: updated.enabled,
-    environment: updated.environment,
-    autoConfirmOnPayment: updated.autoConfirmOnPayment,
-  });
-
-  // 3. Persist to Supabase tables
+  // 2. Persist to Supabase tables
   let savedToDb = false;
   let lastDbError: any = null;
 
@@ -1343,6 +1288,12 @@ export async function testSafepayConnection(
     if (targetKey.includes('•') || targetKey.length < 5) {
       hasFailure = true;
       results.push('✗ Public Key appears incomplete or contains placeholder dots.');
+    } else if (targetEnv === 'sandbox' && !targetKey.startsWith('sec_')) {
+      hasFailure = true;
+      results.push('✗ Environment mismatch: Sandbox Public Keys must start with "sec_". If this is a live key (starting with "pub_"), switch the environment dropdown to Production.');
+    } else if (targetEnv === 'production' && !targetKey.startsWith('pub_')) {
+      hasFailure = true;
+      results.push('✗ Environment mismatch: Production Public Keys must start with "pub_". If this is a test key (starting with "sec_"), switch the environment dropdown to Sandbox.');
     } else {
       try {
         const orderInitRes = await fetch(`${baseUrl}/order/v1/init`, {

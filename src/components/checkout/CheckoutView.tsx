@@ -918,8 +918,8 @@ export const CheckoutView: React.FC = () => {
                         <p className="text-xs font-bold" style={{ color: themeColors.text }}>
                           Select how you want to pay in advance:
                         </p>
-                        <span className="text-[10px] text-neutral-500">
-                          2 Advance Methods Available
+                        <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+                          Instant Online &amp; Manual Options
                         </span>
                       </div>
 

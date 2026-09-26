@@ -1272,6 +1272,12 @@ export async function testSafepayConnection(
     if (targetKey.includes('•') || targetKey.length < 5) {
       hasFailure = true;
       results.push('✗ Public Key appears incomplete or contains placeholder dots.');
+    } else if (targetEnv === 'sandbox' && !targetKey.startsWith('sec_')) {
+      hasFailure = true;
+      results.push('✗ Environment mismatch: Sandbox Public Keys must start with "sec_". If this is a live key (starting with "pub_"), switch the environment dropdown to Production.');
+    } else if (targetEnv === 'production' && !targetKey.startsWith('pub_')) {
+      hasFailure = true;
+      results.push('✗ Environment mismatch: Production Public Keys must start with "pub_". If this is a test key (starting with "sec_"), switch the environment dropdown to Sandbox.');
     } else {
       try {
         const orderInitRes = await fetch(`${baseUrl}/order/v1/init`, {
