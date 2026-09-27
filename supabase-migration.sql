@@ -409,7 +409,7 @@ DROP POLICY IF EXISTS "Orders public insert" ON public.orders;
 CREATE POLICY "Orders public insert" ON public.orders
   FOR INSERT TO anon, authenticated
   WITH CHECK (
-    payment_status IN ('unpaid', 'pending_verification')
+    payment_status IN ('unpaid', 'pending_verification', 'payment_submitted')
     AND order_status = 'pending'
     AND total >= 0
     AND subtotal >= 0
@@ -949,7 +949,7 @@ VALUES
   (
     'payment-receipts',
     'payment-receipts',
-    false,
+    true,
     10485760, -- 10MB limit
     ARRAY['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
   )
@@ -959,11 +959,11 @@ ON CONFLICT (id) DO UPDATE SET
   allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 -- 7.1 Product Images & Store Assets Storage Policies
--- Public can read all product images and store assets
+-- Public can read all product images, store assets, and payment receipts
 DROP POLICY IF EXISTS "Product images are publicly accessible" ON storage.objects;
 CREATE POLICY "Product images are publicly accessible" ON storage.objects
   FOR SELECT TO anon, authenticated
-  USING (bucket_id IN ('product-images', 'store-assets'));
+  USING (bucket_id IN ('product-images', 'store-assets', 'payment-receipts'));
 
 -- Admins can upload, update, and delete product images and store assets
 DROP POLICY IF EXISTS "Admins can manage product images" ON storage.objects;
@@ -973,12 +973,6 @@ CREATE POLICY "Admins can manage product images" ON storage.objects
   WITH CHECK (bucket_id IN ('product-images', 'store-assets') AND public.is_admin());
 
 -- 7.2 Payment Receipts Storage Policies
--- Admins can view uploaded payment receipts
-DROP POLICY IF EXISTS "Admins can view payment receipts" ON storage.objects;
-CREATE POLICY "Admins can view payment receipts" ON storage.objects
-  FOR SELECT TO authenticated
-  USING (bucket_id = 'payment-receipts' AND public.is_admin());
-
 -- Customers/Guests can upload payment receipts (constrained by bucket mime type & size limit)
 DROP POLICY IF EXISTS "Anyone can upload payment receipts" ON storage.objects;
 CREATE POLICY "Anyone can upload payment receipts" ON storage.objects

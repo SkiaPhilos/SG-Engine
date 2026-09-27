@@ -12,6 +12,7 @@ import {
   testSafepayConnection,
   clearSafepayCredentials,
 } from './server/safepayService';
+import { sendOrderEmail } from './server/emailService';
 
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 function rateLimit(limit: number, windowMs: number) {
@@ -359,6 +360,27 @@ async function startServer() {
       res.json(result);
     } catch (err: any) {
       res.status(200).json({ success: false, message: `Connection test error: ${err.message || 'Unknown error'}` });
+    }
+  });
+
+  /**
+   * POST /api/orders/email
+   * Sends customer order confirmation email (live via Resend or simulated)
+   */
+  app.post('/api/orders/email', rateLimit(30, 60000), async (req: Request, res: Response) => {
+    try {
+      const { order, storeConfig, origin } = req.body || {};
+      if (!order) {
+        return res.status(400).json({ error: 'Missing order data' });
+      }
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const baseUrl = origin || `${protocol}://${host}`;
+      const result = await sendOrderEmail({ order, storeConfig, origin: baseUrl });
+      res.json(result);
+    } catch (err: any) {
+      console.error('Error dispatching order confirmation email:', err);
+      res.status(500).json({ error: err.message || 'Failed to dispatch email' });
     }
   });
 

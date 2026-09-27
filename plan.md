@@ -88,8 +88,8 @@ The **Store Engine** is a **reusable, configurable e-commerce commerce machine**
 - [x] Payment destination configuration model (JazzCash, Easypaisa, Raast, Bank IBAN, custom rails).
 - [x] Clear payment rail separation (wallet/transfer vs card processing).
 - [x] Payment instructions display with account copy actions and QR code preview.
-- [ ] Receipt screenshot upload & transaction reference validation during checkout.
-- [ ] Admin payment verification interface with proof image lightbox and status transitions.
+- [x] Receipt screenshot upload & transaction reference validation during checkout.
+- [x] Admin payment verification interface with proof image lightbox and status transitions.
 
 ### Phase 7: Shopping Bag, Checkout & Order Immutability
 - [x] Reactive cart drawer with threshold progress bar.

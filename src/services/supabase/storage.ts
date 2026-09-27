@@ -44,9 +44,10 @@ export async function uploadToStorage(
 
   const supabase = getSupabase();
   const fileExt = pathSuffix?.split('.').pop() || 'jpg';
+  const randomSalt = Math.random().toString(36).substring(2, 8);
   const cleanSuffix = pathSuffix
-    ? pathSuffix.replace(/[^a-zA-Z0-9._-]/g, '_')
-    : `file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExt}`;
+    ? `${pathSuffix.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_')}_${randomSalt}.${fileExt}`
+    : `file_${Date.now()}_${randomSalt}.${fileExt}`;
 
   const filePath = `${cleanSuffix}`;
 
@@ -84,13 +85,16 @@ export async function uploadToStorage(
   }
 
   try {
+    // Note: upsert is false for payment-receipts to enable guest uploads under standard INSERT RLS policies
+    const shouldUpsert = bucket !== 'payment-receipts';
     const { error } = await supabase.storage.from(bucket).upload(filePath, body, {
       contentType,
-      upsert: true,
+      upsert: shouldUpsert,
     });
 
     if (error) {
-      console.warn(`[Storage] Upload to ${bucket} error, falling back to data URL:`, error.message);
+      console.warn(`[Storage] Upload to ${bucket} error:`, error.message);
+      // Fallback only if string, but warn
       if (typeof file === 'string') return file;
       return new Promise((resolve) => {
         const reader = new FileReader();

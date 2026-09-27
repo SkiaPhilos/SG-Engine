@@ -36,6 +36,8 @@ import {
   createSafepayTracker,
   SafepayStatusResponse,
 } from '../../services/safepay/safepayClient';
+import { uploadToStorage } from '../../services/supabase/storage';
+import { sendOrderConfirmationEmail } from '../../services/notifications/emailService';
 
 export const CheckoutView: React.FC = () => {
   const {
@@ -55,19 +57,21 @@ export const CheckoutView: React.FC = () => {
   const activeMethods = paymentMethods.filter(pm => pm.enabled);
   const codMethod = activeMethods.find(pm => pm.type === 'cod');
   const advanceMethods = activeMethods.filter(pm => pm.type !== 'cod' && pm.type !== 'safepay');
+  const hasSafepayMethod = activeMethods.some(pm => pm.type === 'safepay');
 
   // Gateway status (Safepay live/sandbox)
   const [safepayStatus, setSafepayStatus] = useState<SafepayStatusResponse | null>(null);
+
+  const isSafepayAvailable = Boolean(
+    (safepayStatus?.enabled && safepayStatus?.hasApiKey) || hasSafepayMethod
+  );
 
   // 1. Fulfillment Type: 'delivery' | 'pickup'
   const isPickupAllowed = config.deliveryConfig?.pickupEnabled !== false;
   const [fulfillmentType, setFulfillmentType] = useState<'delivery' | 'pickup'>('delivery');
 
-  // 2. Primary Payment Rail: 'cod' | 'advance'
-  const [paymentRail, setPaymentRail] = useState<'cod' | 'advance'>('cod');
-
-  // 3. Advance Payment Mode: 'safepay' (Live online instant) | 'manual' (Bank/Wallet transfer with proof)
-  const [advanceMode, setAdvanceMode] = useState<'safepay' | 'manual'>('safepay');
+  // 2. Primary Payment Rail: 'cod' | 'safepay' | 'manual'
+  const [paymentRail, setPaymentRail] = useState<'cod' | 'safepay' | 'manual'>('cod');
 
   // Customer form state
   const [customer, setCustomer] = useState<CustomerDetails>({
@@ -103,18 +107,13 @@ export const CheckoutView: React.FC = () => {
           enabled: isOnlineAvailable,
         });
 
-        // Set advance payment mode preference
-        if (isOnlineAvailable) {
-          setAdvanceMode('safepay');
-        } else if (advanceMethods.length > 0) {
-          setAdvanceMode('manual');
-        }
-
         // Set primary payment rail preference
         if (fulfillmentType === 'delivery' && codMethod) {
           setPaymentRail('cod');
-        } else {
-          setPaymentRail('advance');
+        } else if (isOnlineAvailable) {
+          setPaymentRail('safepay');
+        } else if (advanceMethods.length > 0) {
+          setPaymentRail('manual');
         }
       })
       .catch(err => {
@@ -122,11 +121,8 @@ export const CheckoutView: React.FC = () => {
         if (!isMounted) return;
         if (fulfillmentType === 'delivery' && codMethod) {
           setPaymentRail('cod');
-        } else {
-          setPaymentRail('advance');
-        }
-        if (advanceMethods.length > 0) {
-          setAdvanceMode('manual');
+        } else if (advanceMethods.length > 0) {
+          setPaymentRail('manual');
         }
       });
 
@@ -153,12 +149,16 @@ export const CheckoutView: React.FC = () => {
   }, [storeId, codMethod, fulfillmentType]);
 
   // When switching between delivery and pickup:
-  // Pickup automatically hides & disables COD, switching to Advance Payment
+  // Pickup automatically hides & disables COD, switching to Safepay or Manual Transfer
   useEffect(() => {
     if (fulfillmentType === 'pickup' && paymentRail === 'cod') {
-      setPaymentRail('advance');
+      if (safepayStatus?.enabled && safepayStatus?.hasApiKey) {
+        setPaymentRail('safepay');
+      } else {
+        setPaymentRail('manual');
+      }
     }
-  }, [fulfillmentType, paymentRail]);
+  }, [fulfillmentType, paymentRail, safepayStatus]);
 
   // Update selected manual method if previous was invalid
   useEffect(() => {
@@ -214,7 +214,7 @@ export const CheckoutView: React.FC = () => {
     }
 
     // Manual advance payment validation
-    if (paymentRail === 'advance' && advanceMode === 'manual') {
+    if (paymentRail === 'manual') {
       if (!selectedMethod) {
         setErrorMessage('Please select a bank or wallet transfer destination.');
         return;
@@ -248,8 +248,7 @@ export const CheckoutView: React.FC = () => {
           orderNumber,
           customer: {
             ...customer,
-            // If pickup, save note
-            notes: customer.notes || (fulfillmentType === 'pickup' ? 'Store Pickup Order' : ''),
+            notes: customer.notes || '',
           },
           items: checkoutPricing.items,
           appliedOffers: checkoutPricing.appliedOffers,
@@ -272,6 +271,30 @@ export const CheckoutView: React.FC = () => {
           await consumeInventoryHold(hold.holdId, orderId);
         }
 
+        // Dispatch customer order confirmation email
+        sendOrderConfirmationEmail(
+          {
+            id: orderId,
+            storeId,
+            orderNumber,
+            customer,
+            items: checkoutPricing.items,
+            appliedOffers: checkoutPricing.appliedOffers,
+            subtotal: checkoutPricing.subtotal,
+            discountTotal: checkoutPricing.discountTotal,
+            deliveryFee: checkoutPricing.deliveryFee,
+            fulfillmentType: 'delivery',
+            total: checkoutPricing.total,
+            paymentMethodId: codMethod?.id || 'cod',
+            paymentMethodName: codMethod?.displayName || 'Cash on Delivery (COD)',
+            paymentStatus: 'pending_verification',
+            orderStatus: 'pending',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          config
+        ).catch(e => console.warn('[Checkout] Email send warning:', e));
+
         setActiveOrderId(orderId);
         clearCart();
         setCurrentView('order_confirmation');
@@ -279,7 +302,7 @@ export const CheckoutView: React.FC = () => {
       }
 
       // 3B. Pay Live Online (Instant Safepay)
-      if (paymentRail === 'advance' && advanceMode === 'safepay') {
+      if (paymentRail === 'safepay') {
         if (!safepayStatus?.enabled || !safepayStatus?.hasApiKey) {
           throw new Error('Safepay online checkout is not active. Please select Bank / Wallet Transfer or Cash on Delivery.');
         }
@@ -307,6 +330,34 @@ export const CheckoutView: React.FC = () => {
           orderStatus: 'pending',
           inventoryHoldId: hold.holdId,
         });
+
+        if (hold.holdId) {
+          await consumeInventoryHold(hold.holdId, orderId);
+        }
+
+        // Dispatch customer order confirmation email
+        sendOrderConfirmationEmail(
+          {
+            id: orderId,
+            storeId,
+            orderNumber,
+            customer,
+            items: checkoutPricing.items,
+            appliedOffers: checkoutPricing.appliedOffers,
+            subtotal: checkoutPricing.subtotal,
+            discountTotal: checkoutPricing.discountTotal,
+            deliveryFee: checkoutPricing.deliveryFee,
+            fulfillmentType,
+            total: checkoutPricing.total,
+            paymentMethodId: 'safepay',
+            paymentMethodName: 'Live Online Payment (Safepay)',
+            paymentStatus: 'pending_verification',
+            orderStatus: 'pending',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          config
+        ).catch(e => console.warn('[Checkout] Email send warning:', e));
 
         // Initialize online payment tracker session
         const host = window.location.origin;
@@ -350,6 +401,24 @@ export const CheckoutView: React.FC = () => {
       }
 
       // 3C. Pay in Advance (Manual Bank / Wallet Transfer)
+      let uploadedProofUrl: string | undefined = undefined;
+      if (proofImageBase64) {
+        try {
+          const resUrl = await uploadToStorage(
+            'payment-receipts',
+            proofImageBase64,
+            `receipt_${orderNumber}_${Date.now()}.jpg`
+          );
+          if (resUrl && (resUrl.startsWith('http://') || resUrl.startsWith('https://'))) {
+            uploadedProofUrl = resUrl;
+          } else {
+            console.warn('[Checkout] Proof storage did not return a public HTTP URL');
+          }
+        } catch (uploadErr) {
+          console.warn('[Checkout] Proof storage upload warning:', uploadErr);
+        }
+      }
+
       const orderId = await createOrder(storeId, {
         storeId,
         orderNumber,
@@ -369,16 +438,42 @@ export const CheckoutView: React.FC = () => {
         total: checkoutPricing.total,
         paymentMethodId: selectedMethod?.id || 'manual_transfer',
         paymentMethodName: selectedMethod?.displayName || 'Advance Bank Transfer',
-        paymentStatus: transactionRef || proofImageBase64 ? 'payment_submitted' : 'pending_verification',
+        paymentStatus: 'pending_verification',
         orderStatus: 'pending',
-        transactionReference: transactionRef || undefined,
-        paymentProofUrl: proofImageBase64 || undefined,
+        transactionReference: transactionRef ? transactionRef.trim() : undefined,
+        paymentProofUrl: uploadedProofUrl,
         inventoryHoldId: hold.holdId,
       });
 
       if (hold.holdId) {
         await consumeInventoryHold(hold.holdId, orderId);
       }
+
+      // Dispatch customer order confirmation email
+      sendOrderConfirmationEmail(
+        {
+          id: orderId,
+          storeId,
+          orderNumber,
+          customer,
+          items: checkoutPricing.items,
+          appliedOffers: checkoutPricing.appliedOffers,
+          subtotal: checkoutPricing.subtotal,
+          discountTotal: checkoutPricing.discountTotal,
+          deliveryFee: checkoutPricing.deliveryFee,
+          fulfillmentType,
+          total: checkoutPricing.total,
+          paymentMethodId: selectedMethod?.id || 'manual_transfer',
+          paymentMethodName: selectedMethod?.displayName || 'Advance Bank Transfer',
+          paymentStatus: 'pending_verification',
+          orderStatus: 'pending',
+          transactionReference: transactionRef ? transactionRef.trim() : undefined,
+          paymentProofUrl: uploadedProofUrl,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        config
+      ).catch(e => console.warn('[Checkout] Email send warning:', e));
 
       setActiveOrderId(orderId);
       clearCart();
@@ -770,7 +865,7 @@ export const CheckoutView: React.FC = () => {
               </div>
             </div>
 
-            {/* STEP 3: Payment Options (COD vs Advance Payment) */}
+            {/* STEP 3: Payment Options (COD vs Safepay vs Bank Transfer) */}
             <div
               className="p-6 rounded-2xl border shadow-xs space-y-4"
               style={{
@@ -784,12 +879,16 @@ export const CheckoutView: React.FC = () => {
                   <span>3. Payment Options</span>
                 </h2>
                 <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-neutral-500/10 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20">
-                  {paymentRail === 'cod' ? 'Doorstep Cash' : 'Advance Payment'}
+                  {paymentRail === 'cod'
+                    ? 'Cash on Delivery'
+                    : paymentRail === 'safepay'
+                    ? 'Safepay Online'
+                    : 'Bank / Wallet Transfer'}
                 </span>
               </div>
 
-              {/* Top-Level Payment Options Selector: COD vs Advance Payment */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Top-Level Payment Options Selector: COD vs Safepay vs Manual Transfer */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 {/* 1. Cash on Delivery (COD) - Hidden if Pickup is selected */}
                 {fulfillmentType === 'delivery' && codMethod && (
                   <button
@@ -805,77 +904,100 @@ export const CheckoutView: React.FC = () => {
                     }}
                   >
                     <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
-                          <Truck className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <span className="text-xs font-black block text-emerald-800 dark:text-emerald-300">
-                            Cash on Delivery (COD)
-                          </span>
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                            70% Popular Choice
-                          </span>
-                        </div>
+                      <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
+                        <Truck className="w-4 h-4" />
                       </div>
                       {paymentRail === 'cod' && (
                         <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
                       )}
                     </div>
+                    <span className="text-xs font-black block text-emerald-800 dark:text-emerald-300">
+                      Cash on Delivery
+                    </span>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold block mb-1">
+                      Pay at Doorstep
+                    </span>
                     <p className="text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-400">
-                      Pay cash in hand directly to the delivery rider upon package arrival at your door.
+                      Pay cash in hand directly to the delivery rider upon package arrival.
                     </p>
                   </button>
                 )}
 
-                {/* 2. Advance Payment */}
-                <button
-                  id="payment-option-advance-btn"
-                  type="button"
-                  onClick={() => setPaymentRail('advance')}
-                  className={`p-4 rounded-xl border text-left transition-all relative overflow-hidden ${
-                    fulfillmentType === 'pickup' || !codMethod ? 'sm:col-span-2' : ''
-                  } ${
-                    paymentRail === 'advance' ? 'ring-2 shadow-sm' : 'hover:border-neutral-400 opacity-80'
-                  }`}
-                  style={{
-                    borderColor: paymentRail === 'advance' ? themeColors.primary : themeColors.border,
-                    backgroundColor:
-                      paymentRail === 'advance' ? `${themeColors.primary}10` : themeColors.background,
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2.5">
+                {/* 2. Safepay Live Online Payment */}
+                {isSafepayAvailable && (
+                  <button
+                    id="payment-option-safepay-btn"
+                    type="button"
+                    onClick={() => setPaymentRail('safepay')}
+                    className={`p-4 rounded-xl border text-left transition-all relative overflow-hidden ${
+                      paymentRail === 'safepay' ? 'ring-2 ring-blue-600 shadow-sm' : 'hover:border-neutral-400 opacity-80'
+                    }`}
+                    style={{
+                      borderColor: paymentRail === 'safepay' ? '#2563eb' : themeColors.border,
+                      backgroundColor: paymentRail === 'safepay' ? '#2563eb10' : themeColors.background,
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
+                        <Zap className="w-4 h-4 fill-white" />
+                      </div>
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-800 dark:text-blue-200">
+                        INSTANT
+                      </span>
+                    </div>
+                    <span className="text-xs font-black block text-blue-700 dark:text-blue-300">
+                      Pay Live Online
+                    </span>
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 font-semibold block mb-1">
+                      Cards &amp; Wallets (Safepay)
+                    </span>
+                    <p className="text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+                      Instant confirmation. Visa, Mastercard, PayPak, Raast.
+                    </p>
+                  </button>
+                )}
+
+                {/* 3. Manual Bank / Mobile Wallet Transfer */}
+                {advanceMethods.length > 0 && (
+                  <button
+                    id="payment-option-manual-btn"
+                    type="button"
+                    onClick={() => setPaymentRail('manual')}
+                    className={`p-4 rounded-xl border text-left transition-all relative overflow-hidden ${
+                      paymentRail === 'manual' ? 'ring-2 shadow-sm' : 'hover:border-neutral-400 opacity-80'
+                    }`}
+                    style={{
+                      borderColor: paymentRail === 'manual' ? themeColors.primary : themeColors.border,
+                      backgroundColor: paymentRail === 'manual' ? `${themeColors.primary}10` : themeColors.background,
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-2">
                       <div
                         className="w-9 h-9 rounded-xl flex items-center justify-center text-white shadow-xs"
                         style={{ backgroundColor: themeColors.primary }}
                       >
-                        <Sparkles className="w-4 h-4" />
+                        <Building2 className="w-4 h-4" />
                       </div>
-                      <div>
-                        <span className="text-xs font-black block" style={{ color: themeColors.text }}>
-                          Advance Payment
-                        </span>
-                        <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                          {Boolean(safepayStatus?.enabled && safepayStatus?.hasApiKey)
-                            ? '⚡ Live Online Card & Bank Transfer'
-                            : 'Bank / Wallet Transfer'}
-                        </span>
-                      </div>
+                      {paymentRail === 'manual' && (
+                        <CheckCircle2 className="w-4 h-4" style={{ color: themeColors.primary }} />
+                      )}
                     </div>
-                    {paymentRail === 'advance' && (
-                      <CheckCircle2 className="w-4 h-4" style={{ color: themeColors.primary }} />
-                    )}
-                  </div>
-                  <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
-                    Pay securely upfront for priority order handling and instant automated confirmation.
-                  </p>
-                </button>
+                    <span className="text-xs font-black block" style={{ color: themeColors.text }}>
+                      Bank / Mobile Transfer
+                    </span>
+                    <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold block mb-1">
+                      Manual TID &amp; Proof
+                    </span>
+                    <p className="text-[11px] leading-relaxed" style={{ color: themeColors.muted }}>
+                      Direct transfer via JazzCash, Easypaisa, or Bank IBAN.
+                    </p>
+                  </button>
+                )}
               </div>
 
               {/* DETAILED CONTENT BASED ON CHOSEN PAYMENT OPTION */}
 
-              {/* IF CASH ON DELIVERY (COD) SELECTED */}
+              {/* DETAIL: CASH ON DELIVERY */}
               {paymentRail === 'cod' && fulfillmentType === 'delivery' && (
                 <div
                   className="p-5 rounded-xl border space-y-3"
@@ -911,128 +1033,58 @@ export const CheckoutView: React.FC = () => {
                 </div>
               )}
 
-              {/* IF ADVANCE PAYMENT SELECTED: Present the 2 Types */}
-              {paymentRail === 'advance' && (
-                <div className="space-y-4 pt-2">
-                  {Boolean(safepayStatus?.enabled && safepayStatus?.hasApiKey) && advanceMethods.length > 0 && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold" style={{ color: themeColors.text }}>
-                          Select how you want to pay in advance:
-                        </p>
-                        <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                          Instant Online &amp; Manual Options
-                        </span>
-                      </div>
-
-                      {/* Advance Sub-Option Tabs */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        
-                        {/* Sub-Option A: Pay Live Online (Instant Order - No Waiting) */}
-                        <button
-                          id="advance-suboption-safepay-btn"
-                          type="button"
-                          onClick={() => setAdvanceMode('safepay')}
-                          className={`p-3.5 rounded-xl border text-left transition-all ${
-                            advanceMode === 'safepay'
-                              ? 'ring-2 border-blue-600 bg-blue-500/10 shadow-xs'
-                              : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-400 opacity-80'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs font-extrabold flex items-center gap-1.5 text-blue-700 dark:text-blue-300">
-                              <Zap className="w-4 h-4 fill-blue-500 text-blue-500" />
-                              Pay Live Online
-                            </span>
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-800 dark:text-blue-200">
-                              RECOMMENDED
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                            Instant confirmation. No proof or screenshot required. No waiting!
-                          </p>
-                        </button>
-
-                        {/* Sub-Option B: Manual Bank / Wallet Transfer (Wait for confirmation) */}
-                        <button
-                          id="advance-suboption-manual-btn"
-                          type="button"
-                          onClick={() => setAdvanceMode('manual')}
-                          className={`p-3.5 rounded-xl border text-left transition-all ${
-                            advanceMode === 'manual'
-                              ? 'ring-2 border-amber-600 bg-amber-500/10 shadow-xs'
-                              : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-400 opacity-80'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs font-extrabold flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
-                              <Building2 className="w-4 h-4 text-amber-600" />
-                              Bank / Wallet Transfer
-                            </span>
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-200">
-                              Manual Proof
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                            Direct transfer via Bank IBAN, JazzCash, or Easypaisa + TID upload.
-                          </p>
-                        </button>
-                      </div>
-                    </>
-                  )}
-
-                  {/* DETAIL FOR SUB-OPTION A: PAY LIVE ONLINE */}
-                  {Boolean(safepayStatus?.enabled && safepayStatus?.hasApiKey) && advanceMode === 'safepay' && (
-                    <div
-                      className="p-5 rounded-xl border space-y-4"
-                      style={{
-                        backgroundColor: themeColors.background,
-                        borderColor: '#2563eb40',
-                      }}
-                    >
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <span className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                            <Zap className="w-4 h-4 text-blue-600 fill-blue-600" />
-                            Live Online Payment via Safepay
-                          </span>
-                          <p className="text-xs mt-1" style={{ color: themeColors.muted }}>
-                            Instant automated order confirmation without manual receipt check delays.
-                          </p>
-                        </div>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20">
-                          Instant Order
-                        </span>
-                      </div>
-
-                      {/* Payment Card Badges */}
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
-                          💳 Visa &amp; Mastercard
-                        </span>
-                        <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
-                          🇵🇰 PayPak Debit Cards
-                        </span>
-                        <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
-                          📱 Raast &amp; Digital Wallets
-                        </span>
-                      </div>
-
-                      <div className="p-3.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-950 dark:text-blue-200 text-xs space-y-1.5">
-                        <div className="flex items-center gap-2 font-semibold">
-                          <ShieldCheck className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                          <span>How Live Payment Works:</span>
-                        </div>
-                        <p className="text-[11px] leading-relaxed opacity-95">
-                          When you click <strong>Pay Live Online</strong>, you are transferred to a 256-bit encrypted checkout. Your payment is verified instantly, and your order is confirmed without having to wait for a store agent to manually inspect your transfer.
-                        </p>
-                      </div>
+              {/* DETAIL: SAFEPAY LIVE ONLINE */}
+              {paymentRail === 'safepay' && (
+                <div
+                  className="p-5 rounded-xl border space-y-4"
+                  style={{
+                    backgroundColor: themeColors.background,
+                    borderColor: '#2563eb40',
+                  }}
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                        <Zap className="w-4 h-4 text-blue-600 fill-blue-600" />
+                        Live Online Payment via Safepay
+                      </span>
+                      <p className="text-xs mt-1" style={{ color: themeColors.muted }}>
+                        Instant automated order confirmation without manual receipt check delays.
+                      </p>
                     </div>
-                  )}
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20">
+                      Instant Order
+                    </span>
+                  </div>
 
-                  {/* DETAIL FOR SUB-OPTION B: MANUAL BANK / WALLET TRANSFER */}
-                  {advanceMode === 'manual' && (
-                    <div className="space-y-3 pt-1">
+                  {/* Payment Card Badges */}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
+                      💳 Visa &amp; Mastercard
+                    </span>
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
+                      🇵🇰 PayPak Debit Cards
+                    </span>
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
+                      📱 Raast &amp; Digital Wallets
+                    </span>
+                  </div>
+
+                  <div className="p-3.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-950 dark:text-blue-200 text-xs space-y-1.5">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <ShieldCheck className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                      <span>How Live Payment Works:</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed opacity-95">
+                      When you click <strong>Pay Live Online</strong>, you are transferred to a 256-bit encrypted checkout. Your payment is verified instantly, and your order is confirmed without having to wait for a store agent to manually inspect your transfer.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* DETAIL: MANUAL BANK / WALLET TRANSFER */}
+              {paymentRail === 'manual' && (
+                <div className="space-y-4 pt-1">
                       {advanceMethods.length === 0 ? (
                         <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50 text-neutral-600 dark:text-neutral-400 text-xs flex items-center gap-2">
                           <AlertCircle className="w-4 h-4 flex-shrink-0 text-neutral-500" />
@@ -1217,9 +1269,6 @@ export const CheckoutView: React.FC = () => {
                     </div>
                   )}
 
-                </div>
-              )}
-
             </div>
           </div>
 
@@ -1328,14 +1377,14 @@ export const CheckoutView: React.FC = () => {
                   backgroundColor:
                     paymentRail === 'cod'
                       ? '#059669'
-                      : paymentRail === 'advance' && advanceMode === 'safepay'
+                      : paymentRail === 'safepay'
                       ? '#2563eb'
                       : themeColors.primary,
                 }}
               >
                 {paymentRail === 'cod' ? (
                   <Truck className="w-4 h-4" />
-                ) : paymentRail === 'advance' && advanceMode === 'safepay' ? (
+                ) : paymentRail === 'safepay' ? (
                   <Zap className="w-4 h-4 fill-white" />
                 ) : (
                   <ShieldCheck className="w-4 h-4" />
@@ -1343,14 +1392,14 @@ export const CheckoutView: React.FC = () => {
 
                 <span>
                   {isSubmitting
-                    ? paymentRail === 'advance' && advanceMode === 'safepay'
+                    ? paymentRail === 'safepay'
                       ? 'Redirecting to Safepay...'
                       : paymentRail === 'cod'
                       ? 'Placing COD Order...'
                       : 'Submitting Order...'
                     : paymentRail === 'cod'
                     ? `Place COD Order • ${formatPrice(checkoutPricing.total)}`
-                    : paymentRail === 'advance' && advanceMode === 'safepay'
+                    : paymentRail === 'safepay'
                     ? `Pay Live Online • ${formatPrice(checkoutPricing.total)}`
                     : `Submit Order for Verification • ${formatPrice(checkoutPricing.total)}`}
                 </span>
@@ -1365,7 +1414,7 @@ export const CheckoutView: React.FC = () => {
                     </p>
                     <p>Pay upon delivery. No advance card deposit needed.</p>
                   </>
-                ) : paymentRail === 'advance' && advanceMode === 'safepay' ? (
+                ) : paymentRail === 'safepay' ? (
                   <>
                     <p className="font-semibold text-blue-700 dark:text-blue-300">
                       Instant Automated Verification

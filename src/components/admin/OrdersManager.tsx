@@ -16,6 +16,12 @@ import {
   FileText,
   History,
   ShieldCheck,
+  Check,
+  ArrowRight,
+  RotateCcw,
+  Ban,
+  ChevronDown,
+  Sparkles,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { Order, OrderStatus, PaymentStatus, OrderEvent } from '../../types/store';
@@ -30,6 +36,7 @@ export const OrdersManager: React.FC = () => {
   const [viewingProof, setViewingProof] = useState<string | null>(null);
   const [orderEvents, setOrderEvents] = useState<OrderEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   // Load audit trail whenever selectedOrder changes
   React.useEffect(() => {
@@ -56,20 +63,147 @@ export const OrdersManager: React.FC = () => {
   });
 
   const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
-    await updateOrderStatus(storeId, orderId, status);
-    if (selectedOrder && selectedOrder.id === orderId) {
-      setSelectedOrder({ ...selectedOrder, orderStatus: status });
-      const events = await getOrderEvents(orderId);
-      setOrderEvents(events);
+    setIsUpdating(true);
+    try {
+      await updateOrderStatus(storeId, orderId, status);
+      if (selectedOrder && selectedOrder.id === orderId) {
+        setSelectedOrder({ ...selectedOrder, orderStatus: status });
+        const events = await getOrderEvents(orderId);
+        setOrderEvents(events);
+      }
+    } finally {
+      setIsUpdating(false);
     }
   };
 
   const handleUpdatePaymentStatus = async (orderId: string, status: PaymentStatus) => {
-    await updatePaymentStatus(storeId, orderId, status);
-    if (selectedOrder && selectedOrder.id === orderId) {
-      setSelectedOrder({ ...selectedOrder, paymentStatus: status });
-      const events = await getOrderEvents(orderId);
+    setIsUpdating(true);
+    try {
+      await updatePaymentStatus(storeId, orderId, status);
+      if (selectedOrder && selectedOrder.id === orderId) {
+        setSelectedOrder({ ...selectedOrder, paymentStatus: status });
+        const events = await getOrderEvents(orderId);
+        setOrderEvents(events);
+      }
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Authoritative State Machine Transitions
+  const handleApprovePaymentAndConfirm = async (order: Order) => {
+    setIsUpdating(true);
+    try {
+      await updatePaymentStatus(storeId, order.id, 'paid');
+      await updateOrderStatus(storeId, order.id, 'confirmed');
+      setSelectedOrder({ ...order, paymentStatus: 'paid', orderStatus: 'confirmed' });
+      const events = await getOrderEvents(order.id);
       setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleConfirmCodOrder = async (order: Order) => {
+    setIsUpdating(true);
+    try {
+      await updateOrderStatus(storeId, order.id, 'confirmed');
+      setSelectedOrder({ ...order, orderStatus: 'confirmed' });
+      const events = await getOrderEvents(order.id);
+      setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleRejectPayment = async (order: Order) => {
+    const reason = window.prompt('Enter reason for payment rejection (optional, e.g. TID not found in bank statement):');
+    if (reason === null) return;
+    setIsUpdating(true);
+    try {
+      await updatePaymentStatus(storeId, order.id, 'rejected');
+      setSelectedOrder({ ...order, paymentStatus: 'rejected' });
+      const events = await getOrderEvents(order.id);
+      setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleAdvanceOrderStatus = async (order: Order, nextStatus: OrderStatus) => {
+    setIsUpdating(true);
+    try {
+      const isCod = order.paymentMethodId === 'cod' || (order.paymentMethodName || '').toLowerCase().includes('cash on delivery');
+      if (nextStatus === 'delivered' && isCod && order.paymentStatus !== 'paid') {
+        await updatePaymentStatus(storeId, order.id, 'paid');
+      }
+      await updateOrderStatus(storeId, order.id, nextStatus);
+      setSelectedOrder({
+        ...order,
+        orderStatus: nextStatus,
+        paymentStatus: (nextStatus === 'delivered' && isCod) ? 'paid' : order.paymentStatus,
+      });
+      const events = await getOrderEvents(order.id);
+      setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleCancelOrder = async (order: Order) => {
+    if (!window.confirm(`Are you sure you want to cancel Order #${order.orderNumber}?`)) return;
+    setIsUpdating(true);
+    try {
+      await updateOrderStatus(storeId, order.id, 'cancelled');
+      setSelectedOrder({ ...order, orderStatus: 'cancelled' });
+      const events = await getOrderEvents(order.id);
+      setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleReopenOrder = async (order: Order) => {
+    if (!window.confirm(`Reopen Order #${order.orderNumber} back to Pending?`)) return;
+    setIsUpdating(true);
+    try {
+      await updateOrderStatus(storeId, order.id, 'pending');
+      setSelectedOrder({ ...order, orderStatus: 'pending' });
+      const events = await getOrderEvents(order.id);
+      setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleStepBackOrderStatus = async (order: Order, prevStatus: OrderStatus) => {
+    if (!window.confirm(`Revert order fulfillment from "${order.orderStatus}" back to "${prevStatus}"?`)) return;
+    setIsUpdating(true);
+    try {
+      await updateOrderStatus(storeId, order.id, prevStatus);
+      setSelectedOrder({ ...order, orderStatus: prevStatus });
+      const events = await getOrderEvents(order.id);
+      setOrderEvents(events);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const getPipelineIndex = (order: Order): number => {
+    switch (order.orderStatus) {
+      case 'cancelled':
+        return -1;
+      case 'delivered':
+        return 4;
+      case 'shipped':
+        return 3;
+      case 'processing':
+        return 2;
+      case 'confirmed':
+        return 1;
+      case 'pending':
+      default:
+        return 0;
     }
   };
 
@@ -282,41 +416,330 @@ export const OrdersManager: React.FC = () => {
             </div>
 
             <div className="space-y-6 pt-4 text-xs">
-              {/* Status Update Quick Toggles */}
-              <div className="p-4 rounded-xl border grid grid-cols-1 sm:grid-cols-2 gap-4" style={{ borderColor: themeColors.border, backgroundColor: themeColors.background }}>
-                <div>
-                  <label className="block font-semibold mb-1">Payment Verification Status</label>
-                  <select
-                    value={selectedOrder.paymentStatus}
-                    onChange={e => handleUpdatePaymentStatus(selectedOrder.id, e.target.value as PaymentStatus)}
-                    className="w-full px-3 py-2 rounded-lg border text-xs font-bold"
-                    style={{ borderColor: themeColors.border, backgroundColor: themeColors.surface }}
-                  >
-                    <option value="pending_verification">Pending Verification</option>
-                    <option value="payment_submitted">Proof Submitted</option>
-                    <option value="paid">Approved &amp; Paid (✓)</option>
-                    <option value="rejected">Rejected</option>
-                    <option value="refunded">Refunded</option>
-                    <option value="unpaid">Unpaid</option>
-                  </select>
+              {/* 1. Authoritative Visual Lifecycle Stepper */}
+              <div
+                className="p-5 rounded-2xl border space-y-4"
+                style={{
+                  borderColor: themeColors.border,
+                  backgroundColor: themeColors.background,
+                }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-bold uppercase tracking-wider text-[11px] text-neutral-500">
+                    Fulfillment Pipeline
+                  </span>
+                  {selectedOrder.orderStatus === 'cancelled' ? (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                      Cancelled
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 capitalize">
+                      Current Stage: {selectedOrder.orderStatus}
+                    </span>
+                  )}
                 </div>
 
-                <div>
-                  <label className="block font-semibold mb-1">Fulfillment Order Status</label>
-                  <select
-                    value={selectedOrder.orderStatus}
-                    onChange={e => handleUpdateOrderStatus(selectedOrder.id, e.target.value as OrderStatus)}
-                    className="w-full px-3 py-2 rounded-lg border text-xs font-bold capitalize"
-                    style={{ borderColor: themeColors.border, backgroundColor: themeColors.surface }}
-                  >
-                    <option value="pending">Pending</option>
-                    <option value="confirmed">Confirmed</option>
-                    <option value="processing">Processing</option>
-                    <option value="shipped">Shipped</option>
-                    <option value="delivered">Delivered</option>
-                    <option value="cancelled">Cancelled</option>
-                  </select>
+                {/* Progress Pipeline Stepper */}
+                <div className="relative pt-2 pb-1">
+                  <div className="flex items-center justify-between relative z-10">
+                    {[
+                      { index: 0, label: 'Placed' },
+                      { index: 1, label: 'Confirmed' },
+                      { index: 2, label: 'Processing' },
+                      { index: 3, label: 'Shipped' },
+                      { index: 4, label: 'Delivered' },
+                    ].map(step => {
+                      const currentPipeline = getPipelineIndex(selectedOrder);
+                      const isCompleted = currentPipeline > step.index;
+                      const isCurrent = currentPipeline === step.index;
+                      const isCancelled = selectedOrder.orderStatus === 'cancelled';
+
+                      return (
+                        <div key={step.index} className="flex flex-col items-center flex-1">
+                          <div
+                            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-[11px] transition-all shadow-xs ${
+                              isCancelled
+                                ? 'bg-neutral-200 text-neutral-400 dark:bg-neutral-800'
+                                : isCompleted
+                                ? 'bg-emerald-600 text-white'
+                                : isCurrent
+                                ? 'ring-3 ring-blue-500 bg-blue-600 text-white scale-110'
+                                : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-500'
+                            }`}
+                          >
+                            {isCompleted ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : step.index + 1}
+                          </div>
+                          <span
+                            className={`text-[10px] mt-1.5 font-semibold text-center ${
+                              isCurrent
+                                ? 'text-blue-600 dark:text-blue-400 font-bold'
+                                : isCompleted
+                                ? 'text-emerald-700 dark:text-emerald-400'
+                                : 'text-neutral-400'
+                            }`}
+                          >
+                            {step.label}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+
+                {/* 2. Context-Aware Guided Action Card */}
+                <div
+                  className="p-4 rounded-xl border space-y-3"
+                  style={{
+                    backgroundColor: themeColors.surface,
+                    borderColor: themeColors.border,
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold flex items-center gap-1.5" style={{ color: themeColors.text }}>
+                      <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Next Operational Action</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getPaymentBadge(selectedOrder.paymentStatus)}`}>
+                        Payment: {selectedOrder.paymentStatus.replace('_', ' ')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Flow Action Scenarios */}
+                  {selectedOrder.orderStatus === 'cancelled' ? (
+                    <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-800 dark:text-red-200 space-y-2">
+                      <p className="font-semibold text-xs flex items-center gap-1.5">
+                        <XCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                        <span>Order is Cancelled</span>
+                      </p>
+                      <p className="text-[11px] opacity-90">
+                        This order was cancelled and inventory reservations were returned to stock.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleReopenOrder(selectedOrder)}
+                        disabled={isUpdating}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-neutral-900 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Reopen Order</span>
+                      </button>
+                    </div>
+                  ) : selectedOrder.orderStatus === 'delivered' ? (
+                    <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-900 dark:text-emerald-100 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                      <span className="text-xs font-semibold">
+                        Order fully completed and delivered to customer. No further action needed.
+                      </span>
+                    </div>
+                  ) : selectedOrder.orderStatus === 'pending' ? (
+                    /* Stage 0: Placed / Verification Required */
+                    <div className="space-y-3">
+                      {selectedOrder.paymentStatus === 'paid' ? (
+                        <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 space-y-2">
+                          <p className="text-[11px] text-emerald-900 dark:text-emerald-100">
+                            <strong>Payment Verified (Paid):</strong> Payment has been successfully verified via {selectedOrder.paymentMethodName || 'online gateway'}. Confirm this order to advance to packaging.
+                          </p>
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleAdvanceOrderStatus(selectedOrder, 'confirmed')}
+                              disabled={isUpdating}
+                              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <span>Confirm Order for Packaging</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : selectedOrder.paymentMethodId === 'cod' || (selectedOrder.paymentMethodName || '').toLowerCase().includes('cash on delivery') ? (
+                        <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 space-y-2">
+                          <p className="text-[11px] text-emerald-900 dark:text-emerald-100">
+                            <strong>Cash on Delivery (COD) Order:</strong> Customer will pay upon delivery. Confirm the delivery address and contact phone number, then advance the order for packaging.
+                          </p>
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmCodOrder(selectedOrder)}
+                              disabled={isUpdating}
+                              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <span>Confirm Order for Packaging</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 space-y-2">
+                          <p className="text-[11px] text-amber-900 dark:text-amber-100">
+                            <strong>Manual Payment Verification:</strong> Customer submitted an advance transfer. Review the Transaction Reference (TID) and payment proof screenshot below before approving.
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleApprovePaymentAndConfirm(selectedOrder)}
+                              disabled={isUpdating}
+                              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <span>Approve Payment &amp; Confirm Order</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRejectPayment(selectedOrder)}
+                              disabled={isUpdating}
+                              className="px-3 py-2 rounded-xl border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 font-semibold text-xs hover:bg-red-100 transition-all cursor-pointer"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Reject Payment</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : selectedOrder.orderStatus === 'confirmed' ? (
+                    /* Stage 1: Confirmed -> Pack Items */
+                    <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 space-y-2">
+                      <p className="text-[11px] text-blue-900 dark:text-blue-100">
+                        <strong>Order Confirmed:</strong> Payment has been verified (or COD approved). Proceed to pick the {selectedOrder.items?.length || 0} ordered item(s) from inventory and prepare parcel packaging.
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAdvanceOrderStatus(selectedOrder, 'processing')}
+                          disabled={isUpdating}
+                          className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                        >
+                          <Package className="w-3.5 h-3.5" />
+                          <span>Start Packaging (Mark Processing)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleStepBackOrderStatus(selectedOrder, 'pending')}
+                          disabled={isUpdating}
+                          className="px-2.5 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 text-[11px] font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        >
+                          Revert to Placed
+                        </button>
+                      </div>
+                    </div>
+                  ) : selectedOrder.orderStatus === 'processing' ? (
+                    /* Stage 2: Processing -> Hand Over to Courier */
+                    <div className="p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20 space-y-2">
+                      <p className="text-[11px] text-indigo-900 dark:text-indigo-100">
+                        <strong>Packaging Complete:</strong> Parcel is boxed and labeled. Hand over parcel to delivery courier or dispatch rider.
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAdvanceOrderStatus(selectedOrder, 'shipped')}
+                          disabled={isUpdating}
+                          className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                        >
+                          <Truck className="w-3.5 h-3.5" />
+                          <span>Dispatch &amp; Mark as Shipped</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleStepBackOrderStatus(selectedOrder, 'confirmed')}
+                          disabled={isUpdating}
+                          className="px-2.5 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 text-[11px] font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        >
+                          Revert to Confirmed
+                        </button>
+                      </div>
+                    </div>
+                  ) : selectedOrder.orderStatus === 'shipped' ? (
+                    /* Stage 3: Shipped -> Mark Delivered */
+                    <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 space-y-2">
+                      <p className="text-[11px] text-purple-900 dark:text-purple-100">
+                        <strong>Order In Transit:</strong> Courier is delivering parcel to customer destination. Once the courier confirms delivery, mark as delivered.
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAdvanceOrderStatus(selectedOrder, 'delivered')}
+                          disabled={isUpdating}
+                          className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Mark Order as Delivered (Complete)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleStepBackOrderStatus(selectedOrder, 'processing')}
+                          disabled={isUpdating}
+                          className="px-2.5 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 text-[11px] font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        >
+                          Revert to Processing
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Cancel Action (Available if not delivered and not cancelled) */}
+                  {selectedOrder.orderStatus !== 'delivered' && selectedOrder.orderStatus !== 'cancelled' && (
+                    <div className="pt-2 border-t flex justify-end" style={{ borderColor: themeColors.border }}>
+                      <button
+                        type="button"
+                        onClick={() => handleCancelOrder(selectedOrder)}
+                        disabled={isUpdating}
+                        className="text-[11px] text-red-600 dark:text-red-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <Ban className="w-3 h-3" />
+                        <span>Cancel Order</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Controlled Order Adjustments (Replacing Freeform Selects) */}
+                <details className="text-[11px] group">
+                  <summary className="font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 cursor-pointer flex items-center justify-between py-1">
+                    <span>Payment &amp; Administrative Actions</span>
+                    <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" />
+                  </summary>
+                  <div className="pt-3 border-t mt-2 space-y-3" style={{ borderColor: themeColors.border }}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-neutral-400 mr-1">Payment Actions:</span>
+                      {selectedOrder.paymentStatus !== 'paid' && (
+                        <button
+                          type="button"
+                          onClick={() => handleUpdatePaymentStatus(selectedOrder.id, 'paid')}
+                          disabled={isUpdating}
+                          className="px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 font-semibold hover:bg-emerald-100 transition-colors"
+                        >
+                          ✓ Mark Payment Paid
+                        </button>
+                      )}
+                      {selectedOrder.paymentStatus !== 'rejected' && selectedOrder.paymentStatus !== 'paid' && (
+                        <button
+                          type="button"
+                          onClick={() => handleUpdatePaymentStatus(selectedOrder.id, 'rejected')}
+                          disabled={isUpdating}
+                          className="px-2.5 py-1 rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 font-semibold hover:bg-red-100 transition-colors"
+                        >
+                          ✗ Mark Payment Rejected
+                        </button>
+                      )}
+                      {selectedOrder.paymentStatus === 'paid' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`Mark payment as refunded for Order #${selectedOrder.orderNumber}?`)) {
+                              handleUpdatePaymentStatus(selectedOrder.id, 'refunded');
+                            }
+                          }}
+                          disabled={isUpdating}
+                          className="px-2.5 py-1 rounded-lg border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/20 text-purple-700 dark:text-purple-300 font-semibold hover:bg-purple-100 transition-colors"
+                        >
+                          ↺ Mark as Refunded
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </details>
               </div>
 
               {/* Payment Proof Verification Card */}

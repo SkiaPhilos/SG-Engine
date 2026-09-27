@@ -575,6 +575,19 @@ export const SafepayGatewayManager: React.FC = () => {
           {/* Credentials and Configuration Fields (ONLY SHOWN WHEN ENABLED) */}
           {enabled && (
             <>
+              {/* Active Vault Storage Reassurance Banner */}
+              {status?.hasApiKey && (
+                <div className="p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 text-xs space-y-1.5">
+                  <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                    <span>Safepay Credentials Active &amp; Encrypted in Database Vault</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-800/90 dark:text-emerald-300/90 leading-relaxed">
+                    Your keys are securely encrypted (AES-256-GCM) in the <strong>public.store_private_settings</strong> table in Supabase. Plaintext keys are intentionally hidden from browser inspection tools for zero-exposure security. Active Public Key: <code className="font-mono bg-emerald-500/20 px-1 py-0.5 rounded text-[10px]">{status.maskedApiKey}</code>.
+                  </p>
+                </div>
+              )}
+
               {/* Automatic Order Confirmation Toggle */}
               <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: themeColors.border }}>
                 <div className="pr-4">
@@ -837,7 +850,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKeyInput}
                 onChange={e => handleApiKeyChange(e.target.value)}
-                placeholder={status?.hasApiKey ? "Enter new Public Key to replace existing key" : "Paste Public Key (sec_... or pub_...)"}
+                placeholder={status?.hasApiKey ? `Saved in Vault (${status.maskedApiKey}) — paste here to replace` : "Paste Public Key (sec_... or pub_...)"}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -878,7 +891,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showSecretKey ? 'text' : 'password'}
                 value={secretKeyInput}
                 onChange={e => handleSecretKeyChange(e.target.value)}
-                placeholder={status?.hasSecretKey ? "Enter new Secret Key to replace existing secret" : "Paste 64-character hex Secret Key"}
+                placeholder={status?.hasSecretKey ? `Saved in Vault (${status.maskedSecretKey}) — paste here to replace` : "Paste 64-character hex Secret Key"}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,
@@ -919,7 +932,7 @@ export const SafepayGatewayManager: React.FC = () => {
                 type={showWebhookSecret ? 'text' : 'password'}
                 value={webhookSecretInput}
                 onChange={e => handleWebhookSecretChange(e.target.value)}
-                placeholder={status?.hasWebhookSecret ? "Enter new Webhook Secret to replace existing" : "Paste Shared Secret (from Developer > Endpoints)"}
+                placeholder={status?.hasWebhookSecret ? "Saved in Vault (••••••••••••••••) — paste here to replace" : "Paste Shared Secret (from Developer > Endpoints)"}
                 className="w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono outline-none transition-all pr-10 focus:ring-2"
                 style={{
                   borderColor: themeColors.border,

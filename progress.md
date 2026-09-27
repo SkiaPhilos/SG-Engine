@@ -134,6 +134,11 @@
 - **ADR 016 (2026-09-20) - Deterministic Safepay Key Persistence & Authentic Verification**:
   Resolved key persistence across admin tab navigation by coupling server disk vault backup (`.safepay_vault.json`) with client draft persistence (`safepay_keys_draft_${storeId}`). Removed speculative "swap" checks and unverified success statuses in `testSafepayConnection` across both Express and Vercel serverless engines. Tests now strictly validate against Safepay's official `/order/v1/init` and `/client/passport/v1/token` endpoints, accurately reporting failure on invalid credentials and clearly explaining that webhook shared secrets are verified dynamically via HMAC-SHA256 during live webhook delivery.
 
+- **ADR 017 (2026-09-27) - Resilient Payment Receipt Ingestion & Public CDN Storage**:
+  Resolved order creation failures when payment proofs were attached. In `storage.ts`, set `upsert: false` for the `payment-receipts` bucket with randomized filenames (`receipt_${timestamp}_${salt}.jpg`), satisfying the guest/anonymous INSERT RLS policy without triggering UPDATE permission checks. Switched `payment-receipts` bucket to `public: true` so generated CDN URLs load cleanly in both the customer order tracking view and the operator lightbox without requiring authentication bearer headers.
+- **ADR 018 (2026-09-27) - Structured Unidirectional Order Fulfillment Pipeline**:
+  Replaced unconstrained manual `<select>` status dropdowns in `OrdersManager.tsx` with a strict, stage-gated business state machine. Guided stages (Placed -> Confirmed -> Processing -> Shipped -> Delivered) eliminate arbitrary state desynchronization. Added explicit payment verification triggers ("Approve Payment & Confirm Order", "Reject Payment") and controlled "Step Back" actions with confirmation and automatic `order_events` audit trail logging. Mounted `/api/orders/email` with customer order confirmation email dispatch.
+
 ---
 
 ## 4. Current Focus: Step-by-Step Execution
